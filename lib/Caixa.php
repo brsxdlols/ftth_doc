@@ -413,7 +413,11 @@ final class Caixa
     public static function sugerirNome(int $regiaoId, string $tipo, ?string $base = null): ?string
     {
         $prefixo = $tipo === 'CTO_AP' ? 'CTO' : $tipo;
-        if ($base && preg_match('/^(.*?)(\d+)$/', trim($base), $m)) {
+        if ($base !== null && trim($base) !== '') {
+            // Nome sem número no fim ("Caixa", "UCD-ATRIA") não tem sequência: sem sugestão.
+            if (!preg_match('/^(.*?)(\d+)$/', trim($base), $m)) {
+                return null;
+            }
             $largura = strlen($m[2]);
             for ($i = (int) $m[2] + 1; $i <= (int) $m[2] + 50; $i++) {
                 $tentativa = $m[1] . str_pad((string) $i, $largura, '0', STR_PAD_LEFT);
@@ -425,9 +429,12 @@ final class Caixa
             return null;
         }
 
+        // Só nomes que terminam em número servem de base. Antes, um "Caixa" aqui fazia a
+        // função chamar a si mesma para sempre e o 504 derrubava o painel inteiro (29/09/2026).
         $ultimo = Db::valor(
             'SELECT nome FROM tab_ftth_caixa
-              WHERE regiao_id = ? AND tipo = ? ORDER BY nome DESC LIMIT 1', [$regiaoId, $tipo]);
+              WHERE regiao_id = ? AND tipo = ? AND nome REGEXP \'[0-9]$\'
+              ORDER BY nome DESC LIMIT 1', [$regiaoId, $tipo]);
         return $ultimo ? self::sugerirNome($regiaoId, $tipo, (string) $ultimo) : $prefixo . '.01';
     }
 }

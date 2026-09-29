@@ -127,6 +127,11 @@ Auditoria::configurar($usuario_logado);
 if (empty($_SESSION['ftth_csrf'])) {
     $_SESSION['ftth_csrf'] = bin2hex(random_bytes(16));
 }
+// AJAX do addon só LÊ a sessão daqui em diante. Soltar o lock agora impede que uma
+// requisição lenta prenda o usuário no painel inteiro do MK-AUTH (504 em qualquer tela).
+if (isset($_GET['ajax']) && session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
 function ftth_csrf_token(): string
 {
     return $_SESSION['ftth_csrf'];

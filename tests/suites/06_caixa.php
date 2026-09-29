@@ -37,6 +37,12 @@ $sug = Caixa::sugerirNome($regiao, 'CTO', 'CTO.02.05');
 T::igual('pula os nomes ocupados e sugere o primeiro livre', 'CTO.02.09', $sug);
 T::igual('o nome sugerido realmente está livre', null,
     Db::valor('SELECT id FROM tab_ftth_caixa WHERE regiao_id = ? AND nome = ?', [$regiao, $sug]));
+// Nome livre, sem número no fim, já travou o painel com 504 (recursão infinita, 29/09/2026).
+T::igual('base sem número no fim não sugere nada', null, Caixa::sugerirNome($regiao, 'DC', 'POP'));
+$semNumero = Caixa::criar($regiao, 'PREDIO', 'ZZZ Predio Sem Numero', '#FF9100', -24.8851, -52.2101, 'teste');
+T::certo('cria ponto com nome sem número', $semNumero->ok, json_encode($semNumero->errors));
+T::certo('sugestão ignora o nome sem número e responde',
+    Caixa::sugerirNome($regiao, 'PREDIO') !== 'ZZZ Predio Sem Numero');
 
 // Mover
 $v = (int) Db::valor('SELECT versao FROM tab_ftth_caixa WHERE id = ?', [$nova]);
