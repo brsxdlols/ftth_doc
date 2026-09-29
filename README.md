@@ -122,19 +122,3 @@ php /opt/mk-auth/admin/addons/ftth_doc/cli/diagnostico.php
 ```
 
 Ela mostra versão, estado do banco, permissões e o que está faltando — sem expor senha nenhuma.
-
-## Para desenvolvedores
-
-```bash
-php tests/run.php --user=root --pass=SENHA --db=mkradius_ftth_test   # suíte completa
-php tests/comparar_schema.php --user=root --pass=SENHA               # schema x migrations antigas
-./empacotar.sh                                                       # gera pacote/*.tar.gz
-```
-
-A suíte **apaga e recria** o banco que você indicar, por isso exige `test` no nome e recusa
-rodar de dentro de `/opt/mk-auth`. O arquivo KMZ usado pelas suítes 04 e 05 não está no
-repositório (é a planta real de um provedor); sem ele essas duas suítes são puladas.
-
-O schema vive em [`sql/baseline.sql`](sql/baseline.sql), aplicado inteiro a cada instalação e a
-cada atualização — ele é idempotente. As 17 migrations anteriores ficam em
-[`sql/historico/`](sql/historico/) apenas como registro e para o teste de equivalência.
