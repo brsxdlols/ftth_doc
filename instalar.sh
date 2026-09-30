@@ -9,6 +9,7 @@
 #
 # Opcoes (depois de "| bash -s --"):
 #   --versao=v0.9.0   instala uma versao especifica em vez da ultima publicada
+#   --pacote=ARQ.tar.gz  instala a partir de um pacote local (gerado pelo empacotar.sh), sem GitHub
 #   --forcar          reinstala mesmo estando atualizado
 #   --limpar          derruba as tabelas aposentadas (pede confirmacao se tiverem dados)
 #   --nao-interativo  nunca pergunta nada; falta de credencial vira erro
@@ -67,6 +68,7 @@ declare -a DESFAZER=()
 
 # argumentos
 OPT_VERSAO=""
+OPT_PACOTE=""
 OPT_FORCAR=0
 OPT_LIMPAR=0
 OPT_INTERATIVO=1
@@ -117,6 +119,7 @@ ler_argumentos() {
     for a in "$@"; do
         case "$a" in
             --versao=*)      OPT_VERSAO="${a#*=}" ;;
+            --pacote=*)      OPT_PACOTE="${a#*=}" ;;
             --forcar)        OPT_FORCAR=1 ;;
             --limpar)        OPT_LIMPAR=1 ;;
             --nao-interativo) OPT_INTERATIVO=0 ;;
@@ -124,7 +127,7 @@ ler_argumentos() {
             --diagnostico)   OPT_SO_DIAGNOSTICO=1 ;;
             --db-user=*)     FTTH_DB_USER="${a#*=}" ;;
             --db-pass=*)     FTTH_DB_PASS="${a#*=}" ;;
-            --ajuda|-h)      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+            --ajuda|-h)      sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
             *)               morrer "opcao desconhecida: $a (use --ajuda)" ;;
         esac
     done
@@ -207,7 +210,14 @@ comparar_versoes() {
 
 decidir_acao() {
     VERSAO_INSTALADA="$(versao_instalada)"
-    if [ -n "$OPT_VERSAO" ]; then
+    if [ -n "$OPT_PACOTE" ]; then
+        # Pacote local: a versao e a do manifest de dentro dele, nao a do GitHub.
+        [ -f "$OPT_PACOTE" ] || morrer "pacote nao encontrado: $OPT_PACOTE"
+        local v
+        v="$(tar xzf "$OPT_PACOTE" -O --wildcards '*manifest.json' 2>/dev/null \n            | php -r '$m = json_decode(stream_get_contents(STDIN), true); echo $m["version"] ?? "";' 2>/dev/null || true)"
+        [ -n "$v" ] || morrer "manifest.json nao encontrado dentro de $OPT_PACOTE"
+        VERSAO_ALVO="v$v"
+    elif [ -n "$OPT_VERSAO" ]; then
         VERSAO_ALVO="$OPT_VERSAO"
     else
         VERSAO_ALVO="$(versao_publicada)"
@@ -250,19 +260,22 @@ decidir_acao() {
 baixar_pacote() {
     local staging="$TMP/staging" arquivo="$TMP/pacote.tar.gz" url
 
-    if [ "$VERSAO_ALVO" = "main" ]; then
+    if [ -n "$OPT_PACOTE" ]; then
+        cp "$OPT_PACOTE" "$arquivo" || morrer "nao consegui ler $OPT_PACOTE"
+        info "pacote local $OPT_PACOTE"
+    elif [ "$VERSAO_ALVO" = "main" ]; then
         url="https://github.com/$REPO/archive/refs/heads/main.tar.gz"
     else
         url="https://github.com/$REPO/releases/download/$VERSAO_ALVO/${ADDON}-${VERSAO_ALVO#v}.tar.gz"
     fi
 
-    info "baixando $url"
-    if ! baixar_para "$url" "$arquivo"; then
+    [ -n "$OPT_PACOTE" ] || info "baixando $url"
+    if [ -z "$OPT_PACOTE" ] && ! baixar_para "$url" "$arquivo"; then
         if [ "$VERSAO_ALVO" != "main" ]; then
             aviso "release sem pacote publicado; caindo para o codigo do branch main"
             VERSAO_ALVO=main
             baixar_para "https://github.com/$REPO/archive/refs/heads/main.tar.gz" "$arquivo" \
-                || morrer "falha ao baixar o addon. Sem internet? Tente --versao= com um pacote local."
+                || morrer "falha ao baixar o addon. Sem internet? Use --pacote= com um pacote local."
         else
             morrer "falha ao baixar o addon de $url"
         fi

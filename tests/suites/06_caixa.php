@@ -70,5 +70,23 @@ $v = (int) Db::valor('SELECT versao FROM tab_ftth_caixa WHERE id = ?', [$nova]);
 T::certo('exclui caixa solta', Caixa::excluir($nova, $v, 'teste')->ok);
 T::certo('exclusão é lógica (registro continua)',
     Db::um('SELECT excluido_em FROM tab_ftth_caixa WHERE id = ?', [$nova])['excluido_em'] !== null);
-T::igual('nome excluído NÃO volta a ser usado', false,
-    Caixa::criar($regiao, 'CEO', 'CEO.99.10', '#FF9100', -24.88, -52.21, 'teste')->ok);
+// 0.9.6: nome de caixa excluída volta a ficar livre.
+$reuso = Caixa::criar($regiao, 'CEO', 'CEO.99.10', '#FF9100', -24.88, -52.21, 'teste');
+T::certo('nome excluído volta a ser usado', $reuso->ok, json_encode($reuso->errors));
+T::igual('nome ativo continua recusado', false,
+    Caixa::criar($regiao, 'CEO', 'CEO.99.10', '#FF9100', -24.881, -52.211, 'teste')->ok);
+
+// A sugestão preenche o menor número livre da série (0.9.6).
+$serie = [];
+foreach (['ZZS.01', 'ZZS.02', 'ZZS.03', 'ZZS.04'] as $i => $n) {
+    $serie[$n] = (int) Caixa::criar($regiao, 'PREDIO', $n, '#FF9100', -24.89 - $i / 1000, -52.22, 'teste')->data['id'];
+}
+T::igual('série inteira: sugere a seguinte', 'ZZS.05', Caixa::sugerirNome($regiao, 'PREDIO', 'ZZS.00'));
+foreach (['ZZS.03', 'ZZS.04'] as $n) {
+    Caixa::excluir($serie[$n], null, 'teste');
+}
+T::igual('excluir o fim da série faz a sugestão voltar', 'ZZS.03', Caixa::sugerirNome($regiao, 'PREDIO', 'ZZS.00'));
+Caixa::excluir($serie['ZZS.02'], null, 'teste');
+T::igual('buraco no meio é preenchido primeiro', 'ZZS.02', Caixa::sugerirNome($regiao, 'PREDIO', 'ZZS.00'));
+T::certo('o nome sugerido pode ser criado',
+    Caixa::criar($regiao, 'PREDIO', 'ZZS.02', '#FF9100', -24.895, -52.22, 'teste')->ok);

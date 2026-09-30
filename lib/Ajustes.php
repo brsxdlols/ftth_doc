@@ -14,6 +14,42 @@ final class Ajustes
     public const TIPOS_MAPA = ['hybrid' => 'Híbrido', 'satellite' => 'Satélite',
                                'roadmap' => 'Ruas', 'terrain' => 'Relevo'];
 
+    /**
+     * Camadas do mapa, na ordem da aba Camadas. Ao contrário dos ajustes acima, valem POR
+     * USUÁRIO do painel e ficam no banco — sobrevivem a fechar a página, a logoff e a trocar
+     * de computador (30/09/2026). POSTES já está aqui para o cadastro de postes que vem a seguir.
+     */
+    public const CAMADAS = ['CTO', 'CEO', 'DC', 'PREDIO', 'PROBLEMA', 'RESERVA', 'POSTES',
+                            'CABOS', 'QUARENTENA'];
+
+    /** @return array<string,bool> todas ligadas, menos as que o usuário desligou */
+    public static function camadas(string $usuario): array
+    {
+        $gravado = json_decode((string) Config::get(self::chaveCamadas($usuario), ''), true);
+        $saida = [];
+        foreach (self::CAMADAS as $c) {
+            $saida[$c] = !is_array($gravado) || !array_key_exists($c, $gravado) || (bool) $gravado[$c];
+        }
+        return $saida;
+    }
+
+    /** Grava o que veio da tela, só com as camadas conhecidas. */
+    public static function salvarCamadas(array $camadas, string $usuario): array
+    {
+        $limpo = [];
+        foreach (self::CAMADAS as $c) {
+            $limpo[$c] = !array_key_exists($c, $camadas) || filter_var($camadas[$c], FILTER_VALIDATE_BOOLEAN);
+        }
+        Config::set(self::chaveCamadas($usuario), json_encode($limpo), $usuario);
+        return $limpo;
+    }
+
+    /** `camadas:<login>` — login longo vira hash, para caber na chave de 64. */
+    private static function chaveCamadas(string $usuario): string
+    {
+        return 'camadas:' . (strlen($usuario) > 55 ? md5($usuario) : $usuario);
+    }
+
     /** O que a aba mostra hoje. */
     public static function valores(): array
     {

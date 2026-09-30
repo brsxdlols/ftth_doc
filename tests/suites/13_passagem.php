@@ -228,3 +228,12 @@ T::igual('e diz que não havia nada a desfazer', 0, $rd->data['desfeitas']);
 T::igual('lista vazia é operação válida', 0,
     Topologia::desconectarVarias([], 'teste')->data['desfeitas']);
 T::igual('invariantes limpas depois de desfazer', [], Topologia::invariantes($leste));
+
+// "Interligar com fusão" (30/09/2026): mesma bitola e mesmo número, mas o técnico fundiu —
+// tudo sai como FUSAO, na prévia e no banco.
+$simF = Topologia::ligarCabos($leste, $vL, $vLote, false, 'teste', true);
+T::igual('com fusão, a prévia mostra FUSAO', 'FUSAO', $simF->data['pares'][0]['tipo']);
+$rF = Topologia::ligarCabos($leste, $vL, $vLote, true, 'teste', true);
+T::igual('com fusão, as 12 são gravadas como FUSAO', 12,
+    (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_ligacao WHERE caixa_id = ? AND tipo = "FUSAO"', [$leste]));
+T::igual('invariantes limpas depois do lote com fusão', [], Topologia::invariantes($leste));

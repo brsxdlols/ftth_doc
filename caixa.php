@@ -76,7 +76,8 @@ if (isset($_GET['ajax'])) {
                     (int) ($_POST['vao_a'] ?? 0),
                     (int) ($_POST['vao_b'] ?? 0),
                     $aplicar,
-                    $usuario_logado
+                    $usuario_logado,
+                    ($_POST['com_fusao'] ?? '') === '1'
                 )->enviar();
 
             case 'tipo_ligacao':
@@ -224,7 +225,7 @@ include('nav/header.php');
             <button class="ftth-dg-aba" data-aba="editar">
                 <i class="bi-pencil"></i> Editar</button>
             <button class="ftth-dg-aba" data-aba="fusionar">
-                <i class="bi-link-45deg"></i> Fusionar</button>
+                <i class="bi-link-45deg"></i> Interligar</button>
         </div>
 
         <div class="ftth-dg-drawer-corpo" id="aba-adicionar">
@@ -265,6 +266,11 @@ include('nav/header.php');
 
             <label class="ftth-rotulo-campo">Segundo cabo</label>
             <select class="ftth-campo" id="fus-b" style="width:100%"></select>
+
+            <!-- Desmarcado: mesma bitola e mesmo número viram passagem, sem perda. Marcado: o
+                 técnico cortou e fundiu, então tudo vira fusão (com a perda de fusão). -->
+            <label class="ftth-dg-check">
+                <input type="checkbox" id="fus-com-fusao"> Interligar com fusão</label>
 
             <button class="ftth-btn ftth-btn--sec" id="btn-fus-simular" style="width:100%;margin-top:10px">
                 <i class="bi-eye-fill"></i> Ver o que será ligado</button>

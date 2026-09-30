@@ -73,6 +73,9 @@
         $('.ftth-onb-cadeia').each(function () { $(this).html(cadeia($(this).data('foco'))); });
         $('.js-onb-pop').text(passos.pop ? passos.pop.nome : 'POP');
         $('.js-onb-caixa').text(passos.caixa ? passos.caixa.nome : 'caixa');
+        // Já tem cabo, mas ele parou numa ponta livre: o passo 5 explica como terminar (0.9.6).
+        $('.js-onb-cabo-novo').toggle(!passos.cabo_solto);
+        $('.js-onb-cabo-solto').toggle(!!passos.cabo_solto);
 
         var fim = passo === 'fim';
         // Sem chave não existe mapa nenhum: pular o passo 1 deixaria a tela vazia.
@@ -116,9 +119,12 @@
             caixa:  ['A primeira caixa',
                      'Clique no mapa onde fica a caixa que recebe o cabo do '
                      + (passos.pop ? passos.pop.nome : 'POP') + '.'],
+            // O Finalizar acende com dois cliques (ponta livre, 0.9.6): o balão insiste em
+            // terminar NA caixa, porque é isso que fecha o passo.
             cabo:   ['O primeiro cabo', a && a.desenhando()
                      ? 'Siga a rua clicando no mapa e termine clicando em '
-                       + (passos.caixa ? passos.caixa.nome : 'na caixa') + '. Depois, Finalizar.'
+                       + (passos.caixa ? passos.caixa.nome : 'na caixa')
+                       + ' — é ela que fecha o passo. Depois, Finalizar.'
                      : 'Escolha a capacidade do cabo e clique em Desenhar.']
         };
         var t = textos[passo];

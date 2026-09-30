@@ -1815,6 +1815,7 @@
 
         $('#fus-a').html(opcoes).val(vaos[0].id);
         $('#fus-b').html(opcoes).val(vaos[1].id);
+        $('#fus-com-fusao').prop('checked', false);   // sempre nasce desmarcado
         $('#fus-previa').empty();
     }
 
@@ -1870,7 +1871,8 @@
             url: 'caixa.php?ajax=ligar_cabos',
             method: 'POST',
             data: { csrf: CFG.csrf, caixa: CFG.caixa, vao_a: a, vao_b: b,
-                    aplicar: aplicar ? '1' : '0' },
+                    aplicar: aplicar ? '1' : '0',
+                    com_fusao: $('#fus-com-fusao').is(':checked') ? '1' : '0' },
             onOk: function (d) {
                 if (!aplicar) { $('#fus-previa').html(htmlPreviaFusao(d, a, b)); return; }
                 $('#fus-previa').empty();
@@ -1892,7 +1894,8 @@
                     toast(d.puladas ? 'avis' : 'ok',
                         d.ligadas + ' fibra(s) ligada(s)'
                         + (d.puladas ? ', ' + d.puladas + ' pulada(s) por já estarem conectadas.' : '.'));
-                    montarFusionar();
+                    // Interligou: a tarefa acabou, e o diagrama fica livre para conferir.
+                    fecharDrawer();
                 });
             },
             onErro: function (m) {
@@ -2247,6 +2250,8 @@
         $('#fus-a').on('change', function () { ajustarSelecaoFusao('a'); });
         $('#fus-b').on('change', function () { ajustarSelecaoFusao('b'); });
         // O botão de aplicar nasce dentro da prévia, então é delegado.
+        // Trocar a opção muda o tipo de cada ligação: a prévia antiga deixaria de valer.
+        $('#fus-com-fusao').on('change', function () { $('#fus-previa').empty(); });
         $(document).on('click', '#btn-fus-aplicar', function () {
             chamarFusao(parseInt($(this).data('a'), 10), parseInt($(this).data('b'), 10), true);
         });

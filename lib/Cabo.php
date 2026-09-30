@@ -25,6 +25,13 @@ require_once __DIR__ . '/Topologia.php';
 final class Cabo
 {
     public const PADROES_COR = ['ABNT', 'EIA-TIA'];
+
+    /** As cores de rota que o modal de cabo oferece, com o nome (select da quarentena). */
+    public const CORES_ROTA = [
+        '#00E676' => 'Verde', '#00BCD4' => 'Ciano', '#0D47A1' => 'Azul', '#FF9100' => 'Laranja',
+        '#E53935' => 'Vermelho', '#8E24AA' => 'Roxo', '#FDD835' => 'Amarelo', '#212121' => 'Preto',
+        '#9E9E9E' => 'Cinza',
+    ];
     public const STATUS      = ['projeto', 'implantado', 'certificado'];
 
     public static function tipos(): array
@@ -42,10 +49,8 @@ final class Cabo
         if (count($pontos) < 2) {
             return Resultado::erro('FTTH-GEO-001', [], 'Desenhe ao menos o início e o fim do cabo.');
         }
-        if (($pontos[0]['tipo'] ?? '') !== 'CAIXA' || (end($pontos)['tipo'] ?? '') !== 'CAIXA') {
-            return Resultado::erro('FTTH-GEO-005', [],
-                'O cabo precisa começar e terminar em uma caixa.');
-        }
+        // Desde a 0.9.6 o cabo pode começar ou terminar no vazio: a ponta sem caixa ganha uma
+        // PONTA (Caixa::criarPonta), e o vão continua ligando duas "caixas" como sempre.
 
         // Resolve as caixas e monta a geometria completa na ordem do desenho.
         $sequencia = [];
@@ -66,7 +71,13 @@ final class Cabo
                     return Resultado::erro('FTTH-SYS-002', ['caixa' => (int) $c['id']],
                         'A caixa é de outra região.');
                 }
-                $sequencia[] = ['caixa' => (int) $c['id'],
+                // Poste: o cabo PASSA por ele. Clicar no poste marca um vértice no lugar dele —
+                // no meio ou na ponta do traçado (aí vira ponta livre em cima do poste).
+                if ($c['tipo'] === 'POSTE') {
+                    $sequencia[] = ['caixa' => null, 'ponto' => [(float) $c['lat'], (float) $c['lng']]];
+                    continue;
+                }
+                $sequencia[] = ['caixa' => (int) $c['id'], 'ponta' => $c['tipo'] === 'PONTA',
                                 'ponto' => [(float) $c['lat'], (float) $c['lng']]];
             } else {
                 $lat = (float) ($p['lat'] ?? 0);
@@ -78,14 +89,47 @@ final class Cabo
             }
         }
 
+        // Ponta livre só serve para CONTINUAR o próprio cabo (30/09/2026). No meio do traçado
+        // ela não é emenda — não há caixa física ali para fundir nada.
+        $ultimo = count($sequencia) - 1;
+        foreach ($sequencia as $i => $s) {
+            if (!empty($s['ponta']) && $i !== 0 && $i !== $ultimo) {
+                return Resultado::erro('FTTH-SYS-002', ['caixa' => $s['caixa']],
+                    'O traçado não pode passar por uma ponta livre: transforme-a num ponto (CEO) antes.');
+            }
+        }
+
+        // "Continuar cabo" (ficha da ponta): é o MESMO cabo, então capacidade, cores e nome
+        // vêm dele — o que a tela mandar é ignorado.
+        $continuarDe = (int) ($dados['continuar_de'] ?? 0);
+        if ($continuarDe > 0) {
+            if (empty($sequencia[0]['ponta']) || $sequencia[0]['caixa'] !== $continuarDe) {
+                return Resultado::erro('FTTH-SYS-002', ['ponta' => $continuarDe],
+                    'O traçado precisa sair da ponta livre que está sendo continuada.');
+            }
+            $proprio = self::caboDaPonta($continuarDe);
+            if ($proprio === null) {
+                return Resultado::erro('FTTH-SYS-002', ['ponta' => $continuarDe],
+                    'Esta ponta livre não pertence a um cabo só: transforme-a num ponto (CEO).');
+            }
+            $dados = ['cabo_tipo_id' => $proprio['cabo_tipo_id'], 'padrao_cores' => $proprio['padrao_cores'],
+                      'cor_rota' => $proprio['cor_rota'], 'nome' => $proprio['nome'],
+                      'fabricante' => $proprio['fabricante']];
+        }
+
+        // Ponta desenhada no vazio: marca o lugar da PONTA, que nasce dentro da transação.
+        if ($sequencia[0]['caixa'] === null) {
+            $sequencia[0]['caixa'] = 'PONTA_INI';
+        }
+        if ($sequencia[$ultimo]['caixa'] === null) {
+            $sequencia[$ultimo]['caixa'] = 'PONTA_FIM';
+        }
+
         // Quebra em vãos: tudo entre duas caixas consecutivas vira um vão.
         $vaos = [];
         $atual = null;
         foreach ($sequencia as $item) {
             if ($atual === null) {
-                if ($item['caixa'] === null) {
-                    continue;   // não deve acontecer: o primeiro é caixa
-                }
                 $atual = ['ini' => $item['caixa'], 'vertices' => [$item['ponto']]];
                 continue;
             }
@@ -104,6 +148,11 @@ final class Cabo
         if (!$vaos) {
             return Resultado::erro('FTTH-GEO-001', [], 'O traçado não formou nenhum vão.');
         }
+        foreach ($vaos as $v) {
+            if (Geo::comprimento($v['vertices']) < 0.5) {
+                return Resultado::erro('FTTH-GEO-004', [], 'Há um trecho sem comprimento: dois cliques no mesmo lugar.');
+            }
+        }
 
         $tipoId = (int) ($dados['cabo_tipo_id'] ?? 0);
         $tipo = Db::um('SELECT id, rotulo, fibras FROM tab_ftth_cabo_tipo WHERE id = ? AND ativo = 1', [$tipoId]);
@@ -119,8 +168,48 @@ final class Cabo
         $fabricante = trim((string) ($dados['fabricante'] ?? '')) ?: null;
         $folga = Config::num('fator_folga_cabo', 1.03);
 
+        // Traçado que encosta numa ponta livre CONTINUA aquele cabo. Terminar numa ponta vale
+        // igual: o desenho é invertido e cai no mesmo caso. Capacidade diferente não continua
+        // e não nasce outro cabo encostado: trocar de cabo exige uma CEO, onde a emenda existe.
+        $pontasNasPontas = array_values(array_filter([0, $ultimo], static function ($i) use ($sequencia) {
+            return !empty($sequencia[$i]['ponta']);
+        }));
+        if (count($pontasNasPontas) === 2) {
+            return Resultado::erro('FTTH-SYS-002', [],
+                'Para juntar dois cabos, transforme uma das pontas livres num ponto (CEO).');
+        }
+        $continuar = null;
+        if ($pontasNasPontas) {
+            $pontaId = (int) $sequencia[$pontasNasPontas[0]]['caixa'];
+            $continuar = self::pontaParaContinuar($pontaId, (int) $tipo['id']);
+            if ($continuar === null) {
+                $proprio = self::caboDaPonta($pontaId);
+                return Resultado::erro('FTTH-SYS-002', ['ponta' => $pontaId],
+                    $proprio !== null
+                        ? 'A ponta livre é de um cabo de outra capacidade. Para trocar de cabo, a emenda '
+                          . 'precisa de uma CEO: transforme a ponta num ponto antes.'
+                        : 'Esta ponta livre não pertence a um cabo só: transforme-a num ponto (CEO).');
+            }
+            if ($pontasNasPontas[0] !== 0) {
+                $vaos = self::inverterTracado($vaos);
+            }
+        }
+
         return Db::transacao(function () use ($regiaoId, $vaos, $tipo, $padrao, $cor, $nome,
-                                              $fabricante, $folga, $usuario) {
+                                              $fabricante, $folga, $usuario, $continuar) {
+            // As pontas desenhadas no vazio ganham a PONTA agora, dentro da transação.
+            foreach ($vaos as $i => $v) {
+                foreach (['ini' => 0, 'fim' => count($v['vertices']) - 1] as $lado => $idx) {
+                    if (is_string($v[$lado])) {
+                        [$lat, $lng] = $v['vertices'][$idx];
+                        $vaos[$i][$lado] = Caixa::criarPonta($regiaoId, (float) $lat, (float) $lng, $cor, $usuario);
+                    }
+                }
+            }
+            if ($continuar !== null) {
+                return self::continuarCabo($continuar, $vaos, $tipo, $folga, $usuario);
+            }
+
             Db::exec(
                 'INSERT INTO tab_ftth_cabo
                     (regiao_id, nome, fabricante, cabo_tipo_id, padrao_cores, cor_rota,
@@ -162,6 +251,140 @@ final class Cabo
                 'metros'  => round($total, 2),
             ]);
         });
+    }
+
+    /**
+     * A PONTA pode ser continuada por um traçado desta capacidade? Só quando ela é a ponta
+     * de UM vão, de um cabo com a mesma capacidade. Devolve esse vão (com o id da PONTA).
+     */
+    private static function pontaParaContinuar(int $caixaId, int $tipoId): ?array
+    {
+        if ($caixaId <= 0 || Db::valor('SELECT tipo FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL',
+                                       [$caixaId]) !== 'PONTA') {
+            return null;
+        }
+        $vaos = Db::todos(
+            'SELECT v.*, c.cabo_tipo_id FROM tab_ftth_cabo_vao v
+               JOIN tab_ftth_cabo c ON c.id = v.cabo_id
+              WHERE (v.caixa_ini_id = ? OR v.caixa_fim_id = ?) AND v.excluido_em IS NULL
+                AND c.excluido_em IS NULL', [$caixaId, $caixaId]);
+        if (count($vaos) !== 1 || (int) $vaos[0]['cabo_tipo_id'] !== $tipoId) {
+            return null;
+        }
+        return $vaos[0] + ['ponta_id' => $caixaId];
+    }
+
+    /** O cabo de que a PONTA é ponta — null se ela não tem exatamente um vão. */
+    private static function caboDaPonta(int $pontaId): ?array
+    {
+        $cabos = Db::todos(
+            'SELECT c.* FROM tab_ftth_cabo c
+               JOIN tab_ftth_cabo_vao v ON v.cabo_id = c.id
+              WHERE (v.caixa_ini_id = ? OR v.caixa_fim_id = ?) AND v.excluido_em IS NULL
+                AND c.excluido_em IS NULL', [$pontaId, $pontaId]);
+        return count($cabos) === 1 ? $cabos[0] : null;
+    }
+
+    /** O mesmo traçado, desenhado do fim para o começo. */
+    private static function inverterTracado(array $vaos): array
+    {
+        return array_map(static function ($v) {
+            return ['ini' => $v['fim'], 'fim' => $v['ini'], 'vertices' => array_reverse($v['vertices'])];
+        }, array_reverse($vaos));
+    }
+
+    /**
+     * Continua o cabo existente a partir da PONTA: o vão que terminava nela é emendado com o
+     * primeiro trecho novo (mantém o id, e com ele as fusões da outra ponta), os demais
+     * trechos entram no mesmo cabo na ordem certa, e a PONTA sai. Quem chama está na transação.
+     *
+     * @param array $alvo  o vão que toca a PONTA (pontaParaContinuar)
+     * @param array $novos os trechos novos, começando na PONTA
+     */
+    private static function continuarCabo(array $alvo, array $novos, array $tipo, float $folga,
+                                          string $usuario): Resultado
+    {
+        $ponta  = (int) $alvo['ponta_id'];
+        $vaoId  = (int) $alvo['id'];
+        $caboId = (int) $alvo['cabo_id'];
+        $verts  = json_decode((string) $alvo['vertices'], true);
+        $noFim  = (int) $alvo['caixa_fim_id'] === $ponta;
+
+        if ($noFim) {
+            // ... → PONTA, e o traçado novo segue depois dela.
+            $primeiro = array_shift($novos);
+            $verts = array_merge($verts, array_slice($primeiro['vertices'], 1));
+            $ini = (int) $alvo['caixa_ini_id'];
+            $fim = $primeiro['fim'];
+            $depois = $novos;
+            $antesDele = [];
+        } else {
+            // PONTA → ..., e o traçado novo vem ANTES dela: vira do avesso para ler na ordem do cabo.
+            $novos = self::inverterTracado($novos);
+            $ultimo = array_pop($novos);
+            $verts = array_merge(array_slice($ultimo['vertices'], 0, -1), $verts);
+            $ini = $ultimo['ini'];
+            $fim = (int) $alvo['caixa_fim_id'];
+            $depois = [];
+            $antesDele = $novos;
+        }
+
+        $metros = Geo::comprimento($verts);
+        $fator  = (float) ($alvo['fator_folga'] ?: $folga);
+        Db::exec(
+            'UPDATE tab_ftth_cabo_vao
+                SET caixa_ini_id = ?, caixa_fim_id = ?, vertices = ?, comprimento_geo = ?,
+                    comprimento_optico = ?, versao = versao + 1, alterado_por = ?, alterado_em = NOW()
+              WHERE id = ?',
+            [$ini, $fim, json_encode($verts), round($metros, 2),
+             Geo::comprimentoOptico($metros, $fator, (float) $alvo['reserva_m']), $usuario, $vaoId]);
+
+        $inserir = static function (array $v) use ($caboId, $alvo, $folga, $usuario): int {
+            $m = Geo::comprimento($v['vertices']);
+            Db::exec(
+                'INSERT INTO tab_ftth_cabo_vao
+                    (cabo_id, regiao_id, ordem, caixa_ini_id, caixa_fim_id, vertices,
+                     comprimento_geo, fator_folga, reserva_m, comprimento_optico,
+                     origem, criado_por, criado_em)
+                 VALUES (?,?,0,?,?,?,?,?,0,?,"manual",?,NOW())',
+                [$caboId, (int) $alvo['regiao_id'], $v['ini'], $v['fim'], json_encode($v['vertices']),
+                 round($m, 2), $folga, Geo::comprimentoOptico($m, $folga, 0), $usuario]);
+            return Db::ultimoId();
+        };
+
+        // A ordem do cabo inteiro é refeita: os de antes, os que já existiam, os de depois.
+        $existentes = array_map('intval', array_column(Db::todos(
+            'SELECT id FROM tab_ftth_cabo_vao WHERE cabo_id = ? AND excluido_em IS NULL ORDER BY ordem, id',
+            [$caboId]), 'id'));
+        $novosIds = [];
+        $sequencia = [];
+        foreach ($antesDele as $v) {
+            $novosIds[] = $sequencia[] = $inserir($v);
+        }
+        $sequencia = array_merge($sequencia, $existentes);
+        foreach ($depois as $v) {
+            $novosIds[] = $sequencia[] = $inserir($v);
+        }
+        foreach ($sequencia as $i => $id) {
+            Db::exec('UPDATE tab_ftth_cabo_vao SET ordem = ? WHERE id = ?', [$i + 1, $id]);
+        }
+
+        Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NOW(), alterado_por = ?, alterado_em = NOW() WHERE id = ?',
+                 [$usuario, $ponta]);
+        Reserva::colarReservasDosVaos([$vaoId]);
+        Versao::avancar('cabo', $caboId, null, $usuario);
+        Auditoria::registrar('cabo', $caboId, 'continuar', ['ponta' => $ponta],
+            ['vao_emendado' => $vaoId, 'vaos_novos' => $novosIds], (int) $alvo['regiao_id']);
+
+        $total = (float) Db::valor('SELECT SUM(comprimento_optico) FROM tab_ftth_cabo_vao
+                                     WHERE cabo_id = ? AND excluido_em IS NULL', [$caboId]);
+        return Resultado::ok([
+            'cabo_id'    => $caboId,
+            'vaos'       => array_merge([$vaoId], $novosIds),
+            'tipo'       => $tipo['rotulo'],
+            'metros'     => round($total, 2),
+            'continuado' => true,
+        ]);
     }
 
     /**
@@ -364,8 +587,45 @@ final class Cabo
               WHERE c.id = ?', [$caboId]);
     }
 
-    /** Exclui o cabo inteiro (todos os vãos) — recusa se alguma fibra estiver ligada. */
-    public static function excluir(int $caboId, string $usuario): Resultado
+    /**
+     * O que excluir o cabo levaria junto: as ligações por caixa. Só leitura — é o que o modal
+     * de exclusão mostra antes de o usuário confirmar.
+     *
+     * @return array{vaos:int, reservas:int, ligacoes:int, caixas:array}|null
+     */
+    public static function previaExclusao(int $caboId): ?array
+    {
+        if (!Db::valor('SELECT id FROM tab_ftth_cabo WHERE id = ? AND excluido_em IS NULL', [$caboId])) {
+            return null;
+        }
+        $caixas = Db::todos(
+            'SELECT c.nome, COUNT(DISTINCT p.ligacao_id) AS fibras
+               FROM tab_ftth_ligacao_ponta p
+               JOIN tab_ftth_cabo_vao v ON v.id = p.elemento_id
+               JOIN tab_ftth_caixa c    ON c.id = p.caixa_id
+              WHERE p.elemento = "VAO_FIBRA" AND v.cabo_id = ?
+              GROUP BY c.id, c.nome ORDER BY c.nome', [$caboId]);
+        return [
+            'vaos'     => (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_cabo_vao
+                                            WHERE cabo_id = ? AND excluido_em IS NULL', [$caboId]),
+            'reservas' => (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_caixa
+                                            WHERE tipo = "RESERVA" AND excluido_em IS NULL
+                                              AND vao_id IN (SELECT id FROM tab_ftth_cabo_vao WHERE cabo_id = ?)',
+                                          [$caboId]),
+            'ligacoes' => array_sum(array_map('intval', array_column($caixas, 'fibras'))),
+            'caixas'   => $caixas,
+        ];
+    }
+
+    /**
+     * Exclui o cabo inteiro (todos os vãos).
+     *
+     * Com fibra ligada, a primeira resposta é a recusa com a lista das caixas — é ela que a
+     * tela mostra na confirmação. Com `$desligar` (o usuário digitou EXCLUIR, 30/09/2026),
+     * todas as ligações que usam fibra deste cabo são desfeitas antes, em qualquer caixa,
+     * inclusive a saída do DIO no POP. O estado de cada uma vai para o histórico.
+     */
+    public static function excluir(int $caboId, string $usuario, bool $desligar = false): Resultado
     {
         $cabo = Db::um('SELECT * FROM tab_ftth_cabo WHERE id = ? AND excluido_em IS NULL', [$caboId]);
         if (!$cabo) {
@@ -381,12 +641,47 @@ final class Cabo
                JOIN tab_ftth_caixa c    ON c.id = p.caixa_id
               WHERE p.elemento = "VAO_FIBRA" AND v.cabo_id = ?
               GROUP BY c.id, c.nome ORDER BY c.nome', [$caboId]);
-        if ($presas) {
+        if ($presas && !$desligar) {
             return Resultado::erro('FTTH-TOP-016',
                 ['caixas' => $presas, 'ligacoes' => array_sum(array_column($presas, 'fibras'))],
                 self::textoPresas($presas, 'deste cabo'));
         }
 
+        $falha = null;
+        try {
+            return Db::transacao(function () use ($caboId, $usuario, $cabo, $presas, &$falha) {
+                $desfeitas = 0;
+                foreach (Db::todos(
+                    'SELECT DISTINCT p.ligacao_id
+                       FROM tab_ftth_ligacao_ponta p
+                       JOIN tab_ftth_cabo_vao v ON v.id = p.elemento_id
+                      WHERE p.elemento = "VAO_FIBRA" AND v.cabo_id = ?', [$caboId]) as $l) {
+                    $r = Topologia::desconectar((int) $l['ligacao_id'], $usuario);
+                    if (!$r->ok) {
+                        $falha = $r;
+                        throw new RuntimeException('ligação não desfeita');
+                    }
+                    $desfeitas++;
+                }
+                Db::exec('DELETE FROM tab_ftth_diagrama_no
+                           WHERE tipo = "VAO" AND elemento_id IN (SELECT id FROM tab_ftth_cabo_vao WHERE cabo_id = ?)',
+                         [$caboId]);
+                $r = self::apagarCabo($caboId, $usuario, $cabo);
+                $r->data['ligacoes_desfeitas'] = $desfeitas;
+                $r->data['caixas'] = $presas;
+                return $r;
+            });
+        } catch (Throwable $e) {
+            if ($falha !== null) {
+                return $falha;
+            }
+            throw $e;
+        }
+    }
+
+    /** A exclusão em si, sem fibra ligada. Quem chama está na transação. */
+    private static function apagarCabo(int $caboId, string $usuario, array $cabo): Resultado
+    {
         return Db::transacao(function () use ($caboId, $usuario, $cabo) {
             // As reservas são o próprio cabo enrolado: saem junto com ele.
             Db::exec(
@@ -396,6 +691,8 @@ final class Cabo
                 [$usuario, $caboId]);
             Db::exec('UPDATE tab_ftth_cabo_vao SET excluido_em = NOW() WHERE cabo_id = ?', [$caboId]);
             Db::exec('UPDATE tab_ftth_cabo SET excluido_em = NOW() WHERE id = ?', [$caboId]);
+            // A ponta livre é do cabo: sem ele, ela não tem o que segurar.
+            Caixa::limparPontasOrfas((int) $cabo['regiao_id'], $usuario);
             Auditoria::registrar('cabo', $caboId, 'excluir', $cabo, null, (int) $cabo['regiao_id']);
             return Resultado::ok(['id' => $caboId]);
         });
@@ -509,6 +806,14 @@ final class Cabo
         $caixa = Db::um('SELECT * FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL', [$caixaId]);
         if (!$caixa) {
             return Resultado::erro('FTTH-TOP-001', ['caixa' => $caixaId]);
+        }
+        if ($caixa['tipo'] === 'PONTA') {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId, 'vao' => $vaoId],
+                'Ponta livre não emenda cabo: transforme-a num ponto antes.');
+        }
+        if ($caixa['tipo'] === 'POSTE') {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId, 'vao' => $vaoId],
+                'Poste não emenda cabo: o cabo passa por ele.');
         }
         if ($caixa['tipo'] === 'RESERVA') {
             return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId, 'vao' => $vaoId],

@@ -14,6 +14,7 @@ require_once __DIR__ . '/lib/Cabo.php';
 require_once __DIR__ . '/lib/Topologia.php';
 require_once __DIR__ . '/lib/Ajustes.php';
 require_once __DIR__ . '/lib/PrimeirosPassos.php';
+require_once __DIR__ . '/lib/Lote.php';
 
 /* ------------------------------------------------------------------ AJAX */
 if (isset($_GET['ajax'])) {
@@ -80,6 +81,12 @@ if (isset($_GET['ajax'])) {
                 ftth_exigir_csrf();
                 Resultado::ok(Ajustes::salvar($_POST, $usuario_logado))->enviar();
 
+            // Camadas marcadas na aba Camadas: por usuário, gravadas a cada clique.
+            case 'camadas':
+                ftth_exigir_csrf();
+                $cams = json_decode((string) ($_POST['camadas'] ?? '{}'), true);
+                Resultado::ok(Ajustes::salvarCamadas(is_array($cams) ? $cams : [], $usuario_logado))->enviar();
+
             // Primeiros passos: o estado sai do banco, e a tela pede de novo a cada mudança.
             case 'passos':
                 Resultado::ok(PrimeirosPassos::estado())->enviar();
@@ -122,6 +129,15 @@ if (isset($_GET['ajax'])) {
             // Você soltou a caixa em cima de um cabo? Consulta pura: quem decide emendar é o
             // usuário, na confirmação que a tela mostra com estes dados.
             case 'vao_sob_ponto':
+                // Ponta livre por perto tem prioridade: o ponto novo assume a ponta do cabo
+                // (Caixa::criar faz isso sozinho), e a pergunta da emenda não cabe ali.
+                if (($_GET['caixa'] ?? '') === '') {
+                    $ponta = Caixa::pontaProxima((int) ($_GET['regiao'] ?? 0),
+                        (float) ($_GET['lat'] ?? 0), (float) ($_GET['lng'] ?? 0));
+                    if ($ponta !== null) {
+                        Resultado::ok(['vao' => null, 'ponta' => (int) $ponta['id']])->enviar();
+                    }
+                }
                 $achado = Cabo::vaoSobPonto(
                     (int) ($_GET['regiao'] ?? 0),
                     (float) ($_GET['lat'] ?? 0),
@@ -160,6 +176,7 @@ if (isset($_GET['ajax'])) {
                         'cabo_tipo_id' => (int) ($_POST['cabo_tipo_id'] ?? 0),
                         'padrao_cores' => (string) ($_POST['padrao_cores'] ?? 'ABNT'),
                         'cor_rota'     => (string) ($_POST['cor_rota'] ?? '#00E676'),
+                        'continuar_de' => (int) ($_POST['continuar_de'] ?? 0),
                     ],
                     $pontos,
                     $usuario_logado
@@ -181,9 +198,18 @@ if (isset($_GET['ajax'])) {
                     $usuario_logado
                 )->enviar();
 
+            // Prévia do modal "Excluir cabo": o que sai junto. Consulta pura.
+            case 'cabo_previa':
+                $previa = Cabo::previaExclusao((int) ($_GET['cabo'] ?? 0));
+                ($previa === null
+                    ? Resultado::erro('FTTH-TOP-002', [], 'Cabo não encontrado.')
+                    : Resultado::ok($previa))->enviar();
+
             case 'excluir_cabo':
                 ftth_exigir_csrf();
-                Cabo::excluir((int) ($_POST['cabo'] ?? 0), $usuario_logado)->enviar();
+                // Com fibra ligada, só desliga tudo e exclui quando vem a confirmação do modal.
+                Cabo::excluir((int) ($_POST['cabo'] ?? 0), $usuario_logado,
+                    strtoupper(trim((string) ($_POST['confirmacao'] ?? ''))) === 'EXCLUIR')->enviar();
 
             case 'alterar_caixa':
                 ftth_exigir_csrf();
@@ -204,10 +230,11 @@ if (isset($_GET['ajax'])) {
                 ftth_exigir_csrf();
                 $caixas = json_decode((string) ($_POST['caixas'] ?? '[]'), true);
                 $vaos   = json_decode((string) ($_POST['vaos'] ?? '[]'), true);
-                if (!is_array($caixas) || !is_array($vaos)) {
+                $ancoras = json_decode((string) ($_POST['ancoras'] ?? '[]'), true);
+                if (!is_array($caixas) || !is_array($vaos) || !is_array($ancoras)) {
                     Resultado::erro('FTTH-SYS-002', ['campo' => 'movimentos'])->enviar(400);
                 }
-                Mapa::aplicarMovimentos($caixas, $vaos, $usuario_logado)->enviar();
+                Mapa::aplicarMovimentos($caixas, $vaos, $usuario_logado, $ancoras)->enviar();
 
             // A caixa é só uma emenda no meio de um cabo? Consulta pura: a tela usa isto para
             // avisar que excluir vai juntar os dois trechos, antes de fazer.
@@ -222,8 +249,39 @@ if (isset($_GET['ajax'])) {
                     $usuario_logado
                 )->enviar();
 
+            // Modo Selecionar: a área desenhada vira a lista de caixas e a prévia do que sai.
+            // Com `caixas` (ids), refaz a prévia de uma seleção ajustada à mão.
+            case 'selecionar':
+                ftth_exigir_csrf();
+                $regiaoLote = (int) ($_POST['regiao'] ?? 0);
+                if (isset($_POST['caixas'])) {
+                    $ids = json_decode((string) $_POST['caixas'], true);
+                    Resultado::ok(Lote::previa($regiaoLote, is_array($ids) ? $ids : []))->enviar();
+                }
+                $poligono = json_decode((string) ($_POST['poligono'] ?? '[]'), true);
+                Lote::selecionar($regiaoLote, is_array($poligono) ? $poligono : [])->enviar();
+
+            case 'cor_lote':
+                ftth_exigir_csrf();
+                $ids = json_decode((string) ($_POST['caixas'] ?? '[]'), true);
+                Lote::mudarCor((int) ($_POST['regiao'] ?? 0), is_array($ids) ? $ids : [],
+                               (string) ($_POST['cor'] ?? ''), $usuario_logado)->enviar();
+
+            case 'excluir_lote':
+                ftth_exigir_csrf();
+                $ids = json_decode((string) ($_POST['caixas'] ?? '[]'), true);
+                Lote::excluir((int) ($_POST['regiao'] ?? 0), is_array($ids) ? $ids : [],
+                              (string) ($_POST['confirmacao'] ?? ''), $usuario_logado)->enviar();
+
             case 'excluir_caixa':
                 ftth_exigir_csrf();
+                if (($_POST['manter_cabos'] ?? '') === '1') {
+                    Caixa::excluirMantendoCabos(
+                        (int) ($_POST['id'] ?? 0),
+                        isset($_POST['versao']) ? (int) $_POST['versao'] : null,
+                        $usuario_logado
+                    )->enviar();
+                }
                 Caixa::excluir(
                     (int) ($_POST['id'] ?? 0),
                     isset($_POST['versao']) ? (int) $_POST['versao'] : null,
@@ -322,11 +380,13 @@ $aj        = ['google_maps_key' => '', 'mapa_tipo' => 'hybrid', 'mapa_rotulo_zoo
               'raio_quebra_cabo_m' => 10];
 $falha     = null;
 $passos    = null;
+$camadasUsuario = array_fill_keys(Ajustes::CAMADAS, true);   // se o banco falhar, tudo aparece
 try {
     $regioes = Regiao::listar();
     $chave   = (string) Config::get('google_maps_key', '');
     $aj      = Ajustes::valores();
     $passos  = PrimeirosPassos::estado();
+    $camadasUsuario = Ajustes::camadas($usuario_logado);
 } catch (Throwable $e) {
     Log::excecao('mapa.carregar', $e);
     $falha = 'Não foi possível carregar o mapa. FTTH-SYS-001 · ' . Resultado::requestId();
@@ -353,6 +413,8 @@ include('nav/header.php');
     <div class="ftth-mapa-barra">
         <div class="ftth-modos">
             <button class="ftth-modo ativo" data-modo="navegar"><i class="bi-cursor-fill"></i> Navegar</button>
+            <button class="ftth-modo" data-modo="selecionar">
+                <i class="bi-bounding-box-circles"></i> Selecionar</button>
             <button class="ftth-modo" data-modo="caixa">
                 <i class="bi-geo-alt-fill"></i> Ponto</button>
             <button class="ftth-modo" data-modo="cabo">
@@ -471,9 +533,17 @@ include('nav/header.php');
                 <section class="ftth-onb-passo" data-passo="cabo">
                     <h2><i class="bi-share-fill"></i> Ligue o POP à caixa</h2>
                     <div class="ftth-onb-cadeia" data-foco="cabo"></div>
-                    <p>Um cabo sempre liga duas caixas. Ele já vai começar no
+                    <!-- O passo só conta quando o cabo LIGA o POP à caixa (PrimeirosPassos). Cabo que
+                         parou numa ponta livre mostra o segundo texto, com o jeito de terminar. -->
+                    <p class="js-onb-cabo-novo">O cabo já vai começar no
                         <strong class="js-onb-pop"></strong>: siga a rua clicando no mapa e termine
-                        clicando em <strong class="js-onb-caixa"></strong>.</p>
+                        clicando em <strong class="js-onb-caixa"></strong>. Se parar antes, a ponta
+                        fica livre e você continua depois.</p>
+                    <p class="js-onb-cabo-solto" style="display:none">O cabo ainda não chega em
+                        <strong class="js-onb-caixa"></strong>: ele parou numa ponta livre. Clique na
+                        ponta e use <strong>Continuar cabo</strong>, ou, no modo <strong>Mover</strong>,
+                        arraste a ponta até <strong class="js-onb-caixa"></strong> e escolha
+                        <strong>Ancorar</strong>. Também dá para desenhar um cabo novo do POP até ela.</p>
                     <button type="button" class="ftth-btn ftth-btn--pri ftth-onb-acao" data-acao="cabo">
                         <i class="bi-share-fill"></i> Desenhar o cabo</button>
                 </section>
@@ -523,7 +593,8 @@ include('nav/header.php');
                 <button type="button" class="ftth-gaveta-tab ativo" data-aba="regioes">
                     <i class="bi-map"></i><span>Regiões</span></button>
                 <button type="button" class="ftth-gaveta-tab" data-aba="pontos">
-                    <i class="bi-geo-alt"></i><span>Pontos</span></button>
+                    <i class="bi-geo-alt"></i><span>Pontos <b id="pontos-filtro" class="ftth-gaveta-filtro"
+                        style="display:none"></b></span></button>
                 <button type="button" class="ftth-gaveta-tab" data-aba="camadas">
                     <i class="bi-layers"></i><span>Camadas <b id="camadas-conta">5</b></span></button>
                 <button type="button" class="ftth-gaveta-tab" data-aba="ajustes">
@@ -555,6 +626,9 @@ include('nav/header.php');
                         <button type="button" class="ftth-filtro" data-filtro="sem_splitter"
                                 title="CTO e CEO sem nenhum splitter, de atendimento ou de derivação">
                             Sem splitter <b id="conta-sem-splitter"></b></button>
+                        <button type="button" class="ftth-filtro" data-filtro="postes"
+                                title="Só os postes da região">
+                            Postes <b id="conta-postes"></b></button>
                     </div>
                 </div>
                 <div class="ftth-gaveta-lista" id="lista-pontos"></div>
@@ -563,13 +637,21 @@ include('nav/header.php');
             <section class="ftth-gaveta-corpo" data-aba="camadas" style="display:none">
                 <div class="ftth-gaveta-lista">
                     <p class="ftth-gaveta-secao">Mostrar no mapa</p>
-                    <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="CTO" checked> CTO</label>
-                    <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="CEO" checked> CEO</label>
-                    <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="OUTRAS" checked>
-                        Outros pontos <small>DC/POP, prédio, problema, reserva</small></label>
-                    <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="CABOS" checked> Cabos</label>
-                    <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="QUARENTENA" checked>
-                        Quarentena <small>itens importados ainda não revisados</small></label>
+                    <?php
+                    // Por usuário e gravadas no banco (Ajustes::camadas): desmarcar aqui vale até
+                    // o usuário marcar de novo, mesmo depois de logoff ou em outro computador.
+                    $rotulosCamadas = [
+                        'CTO' => ['CTO', ''], 'CEO' => ['CEO', ''], 'DC' => ['DC / POP', ''],
+                        'PREDIO' => ['Prédio', ''], 'PROBLEMA' => ['Problema', ''],
+                        'RESERVA' => ['Reserva', 'sobra de cabo enrolada'],
+                        'POSTES' => ['Postes', ''], 'CABOS' => ['Cabos', 'com as pontas livres'],
+                        'QUARENTENA' => ['Quarentena', 'itens importados ainda não revisados'],
+                    ];
+                    foreach ($rotulosCamadas as $cam => [$rotulo, $nota]): ?>
+                        <label class="ftth-gaveta-opcao"><input type="checkbox" class="cam" value="<?= $cam ?>"
+                            <?= !empty($camadasUsuario[$cam]) ? 'checked' : '' ?>> <?= htmlspecialchars($rotulo) ?>
+                            <?php if ($nota !== ''): ?><small><?= htmlspecialchars($nota) ?></small><?php endif; ?></label>
+                    <?php endforeach; ?>
                 </div>
             </section>
             <!-- Ajustes: valem para todos os usuários do painel. O estado do banco só é lido
@@ -645,7 +727,7 @@ include('nav/header.php');
         <!-- Card flutuante do traçado (padrão UpperX): contagem de pontos e ações. -->
         <div id="cabo-card" class="ftth-flutuante" style="display:none">
             <div class="ftth-flutuante-info">
-                <strong><i class="bi-share-fill"></i> Traçando cabo</strong>
+                <strong><i class="bi-share-fill"></i> <span id="cabo-titulo">Traçando cabo</span></strong>
                 <span id="cabo-contagem">0 pontos</span>
                 <!-- O próximo passo muda a cada clique: toast a cada um seria martelar o
                      usuário. Fica aqui, onde o olho já está enquanto ele desenha. -->
@@ -679,6 +761,39 @@ include('nav/header.php');
                 <i class="bi-x-octagon-fill"></i> Cancelar</button>
             <button class="ftth-btn ftth-btn--pri" id="mover-concluir" disabled>
                 <i class="bi-check-circle-fill"></i> Concluir</button>
+        </div>
+
+        <!-- Modo Selecionar, passo 1: cada clique é um vértice da área (padrão UpperX). -->
+        <div id="sel-card" class="ftth-flutuante" style="display:none">
+            <div class="ftth-flutuante-info">
+                <strong><i class="bi-bounding-box-circles"></i> Selecionar</strong>
+                <span id="sel-conta">0 pontos</span>
+                <span id="sel-dica" class="ftth-flutuante-dica"></span>
+            </div>
+            <button class="ftth-btn ftth-btn--sec" id="sel-cancelar" title="Sair do modo Selecionar">
+                <i class="bi-x-octagon-fill"></i> Cancelar</button>
+            <button class="ftth-btn ftth-btn--sec" id="sel-desfazer" disabled>
+                <i class="bi-arrow-counterclockwise"></i> Desfazer</button>
+            <button class="ftth-btn ftth-btn--pri" id="sel-concluir" disabled>
+                <i class="bi-check-circle-fill"></i> Concluir área</button>
+        </div>
+
+        <!-- Passo 2: o que ficou dentro da área, e as ações sobre isso. -->
+        <div id="sel-barra" class="ftth-flutuante ftth-lote-barra" style="display:none">
+            <div class="ftth-flutuante-info">
+                <strong>Itens selecionados</strong>
+                <span class="ftth-lote-contas">
+                    <span title="Pontos"><i class="bi-geo-alt-fill"></i> <b id="sel-n-caixas">0</b></span>
+                    <span title="Cabos afetados"><i class="bi-share-fill"></i> <b id="sel-n-cabos">0</b></span>
+                </span>
+                <span class="ftth-flutuante-dica">Clique num ponto para tirar ou pôr na seleção.</span>
+            </div>
+            <button class="ftth-btn ftth-btn--sec" id="sel-nova" title="Descartar a seleção e desenhar outra área">
+                <i class="bi-bounding-box"></i> Nova área</button>
+            <button class="ftth-btn ftth-btn--sec" id="sel-cor" title="Mudar a cor dos pontos selecionados">
+                <i class="bi-palette-fill"></i> Cor</button>
+            <button class="ftth-btn ftth-btn--perigo" id="sel-excluir">
+                <i class="bi-trash3-fill"></i> Excluir</button>
         </div>
     </div>
 </div>
@@ -832,12 +947,19 @@ include('nav/header.php');
 <div id="modal-emenda" class="ftth-modal" style="display:none">
     <div class="ftth-modal-caixa">
         <div class="ftth-modal-topo">
-            <strong><i class="bi-scissors"></i> Emendar no cabo?</strong>
+            <!-- O mesmo modal pergunta duas coisas: emendar (padrão, texto abaixo) e ancorar a
+                 ponta livre (js/mapa.js troca o título e a explicação). -->
+            <strong id="em-titulo"><i class="bi-scissors"></i> Emendar no cabo?</strong>
             <button class="ftth-painel-fechar" id="em-fechar">&times;</button>
         </div>
         <div class="ftth-modal-corpo">
             <p id="em-texto" style="margin:0 0 10px"></p>
-            <p class="ftth-sub" style="margin:0">
+            <p class="ftth-sub" id="em-explica-ancora" style="margin:0;display:none">
+                O cabo passa a terminar neste ponto: o traçado vai até ele e a ponta livre sai.
+                Nenhuma fibra é cortada. As fusões você faz depois, no diagrama do ponto.
+                Só é gravado no Concluir.
+            </p>
+            <p class="ftth-sub" id="em-explica-emenda" style="margin:0">
                 Se você emendar: o cabo é cortado em dois trechos que passam a chegar nesta
                 caixa, <strong>a caixa encosta no traçado</strong> e todas as fibras atravessam
                 como passagem — sem perda e sem mexer no que já estava fundido nas pontas.
@@ -853,6 +975,74 @@ include('nav/header.php');
 </div>
 
 <!-- Modal de editar cabo: atributos só. O traçado não se mexe aqui (decisão de 22/09/2026). -->
+<!-- Cor em lote (modo Selecionar): a mesma paleta do cadastro de ponto. -->
+<div id="modal-cor-lote" class="ftth-modal" style="display:none">
+    <div class="ftth-modal-caixa">
+        <div class="ftth-modal-topo">
+            <strong><i class="bi-palette-fill"></i> Mudar cor</strong>
+            <button class="ftth-painel-fechar" id="lc-fechar">&times;</button>
+        </div>
+        <div class="ftth-modal-corpo">
+            <p class="ftth-sub" id="lc-texto" style="margin:0 0 10px"></p>
+            <div class="ftth-cores" id="lc-cores">
+                <?php foreach (Caixa::NOMES_CORES as $hex => $nomeCor): ?>
+                    <button type="button" class="ftth-cor" data-cor="<?= $hex ?>"
+                            title="<?= htmlspecialchars($nomeCor) ?>" style="background:<?= $hex ?>"></button>
+                <?php endforeach; ?>
+            </div>
+            <div id="lc-saida"></div>
+        </div>
+        <div class="ftth-modal-rodape">
+            <button class="ftth-btn ftth-btn--sec" id="lc-cancelar">Cancelar</button>
+            <button class="ftth-btn ftth-btn--pri" id="lc-aplicar" disabled>
+                <i class="bi-check-circle-fill"></i> Aplicar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Exclusão em lote: a prévia vem do servidor (Lote::previa) e é exatamente o que ele faz. -->
+<div id="modal-lote" class="ftth-modal" style="display:none">
+    <div class="ftth-modal-caixa">
+        <div class="ftth-modal-topo">
+            <strong><i class="bi-trash3-fill"></i> Excluir seleção</strong>
+            <button class="ftth-painel-fechar" id="lote-fechar">&times;</button>
+        </div>
+        <div class="ftth-modal-corpo">
+            <div id="lote-previa"></div>
+            <div id="lote-confirma" style="display:none">
+                <label class="ftth-rotulo-campo" for="lote-confirmacao">
+                    Para confirmar, digite <b>EXCLUIR</b></label>
+                <input id="lote-confirmacao" class="ftth-campo" style="width:100%" autocomplete="off">
+            </div>
+            <div id="lote-saida"></div>
+        </div>
+        <div class="ftth-modal-rodape">
+            <button class="ftth-btn ftth-btn--sec" id="lote-cancelar">Cancelar</button>
+            <button class="ftth-btn ftth-btn--perigo" id="lote-excluir">
+                <i class="bi-trash3-fill"></i> Excluir</button>
+        </div>
+    </div>
+</div>
+
+<!-- Excluir cabo: mesmo desenho do "Excluir seleção"; a prévia vem de Cabo::previaExclusao. -->
+<div id="modal-excluir-cabo" class="ftth-modal" style="display:none">
+    <div class="ftth-modal-caixa">
+        <div class="ftth-modal-topo">
+            <strong><i class="bi-trash3-fill"></i> Excluir cabo</strong>
+            <button class="ftth-painel-fechar" id="xc-fechar">&times;</button>
+        </div>
+        <div class="ftth-modal-corpo">
+            <div id="xc-previa"></div>
+            <div id="xc-saida"></div>
+        </div>
+        <div class="ftth-modal-rodape">
+            <button class="ftth-btn ftth-btn--sec" id="xc-cancelar">Cancelar</button>
+            <button class="ftth-btn ftth-btn--perigo" id="xc-excluir">
+                <i class="bi-trash3-fill"></i> Excluir</button>
+        </div>
+    </div>
+</div>
+
 <div id="modal-editar-cabo" class="ftth-modal" style="display:none">
     <div class="ftth-modal-caixa">
         <div class="ftth-modal-topo">
@@ -966,7 +1156,9 @@ window.FTTH_MAPA = {
     // Uma fonte só para o desenho: o marcador e a ficha trocam o {cor} por conta própria.
     silhuetas: <?= json_encode(Caixa::SILHUETAS, JSON_UNESCAPED_SLASHES) ?>,
     // Primeiros passos: o mesmo estado que mapa.php?ajax=passos devolve depois.
-    passos: <?= json_encode($passos, JSON_UNESCAPED_UNICODE) ?>
+    passos: <?= json_encode($passos, JSON_UNESCAPED_UNICODE) ?>,
+    // Camadas do usuário (Ajustes::camadas): o mapa já nasce com o que ele deixou marcado.
+    camadas: <?= json_encode($camadasUsuario) ?>
 };
 </script>
 <script src="js/mapa.js?v=<?= time() ?>"></script>

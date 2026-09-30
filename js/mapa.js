@@ -8,7 +8,10 @@
 
     var mapa, infoAtual = null;
     var marcadores = [], linhas = [], quarentenaObj = [];
-    var camadas = { CTO: true, CEO: true, OUTRAS: true, CABOS: true, QUARENTENA: true };
+    // Camadas por usuário, gravadas no banco (Ajustes::camadas): a página já nasce com elas.
+    var camadas = $.extend({ CTO: true, CEO: true, DC: true, PREDIO: true, PROBLEMA: true, RESERVA: true,
+                              POSTES: true, CABOS: true, QUARENTENA: true },
+                            (window.FTTH_MAPA || {}).camadas || {});
     var esperando = null, regiao = 0;
     var modo = 'navegar';                       // navegar | caixa
     var pontoNovo = null;                       // onde o usuário marcou o pin
@@ -22,13 +25,19 @@
     // pelo FTTH_MAPA_API e escuta o evento 'ftth:mudou', disparado a cada mudança de estado.
     var presetPonto = null;      // {tipo, nome}: o próximo ponto já nasce com tipo e nome
     var caboDesde = null;        // caixa em que o próximo traçado começa sozinho
+    var continuando = null;      // {ponta, nome, tipo, cor}: "Continuar cabo" da ponta livre
     var pontoEmDestaque = 0;     // marcador que pula: o destino do primeiro cabo
-    // O que a rede já tem, para travar o que ainda não faz sentido (sem POP, só POP; sem duas
-    // caixas, sem cabo). Vale para qualquer usuário, com ou sem o assistente na tela.
-    var travas = { pop: true, ancoras: 2 };
+    // O que a rede já tem, para travar o que ainda não faz sentido (sem POP: só POP, e sem
+    // cabo). Vale para qualquer usuário, com ou sem o assistente na tela.
+    var travas = { pop: true };
     // Modo Mover: nada vai para o banco antes do Concluir (decisão de 22/09/2026).
-    var pendentes = { caixas: {}, vaos: {} };
+    var pendentes = { caixas: {}, vaos: {}, ancoras: {} };
     var ultimoDesenho = null;                    // último payload, para saber quem toca quem
+    // Modo Selecionar: a área sendo desenhada e, depois do Concluir, a prévia do servidor.
+    var areaSel = [];                            // vértices da área (google.maps.LatLng)
+    var areaPoligono = null, areaPinos = [];     // desenho provisório da área
+    var selecao = null;                          // Lote::previa — o que sai se excluir
+    var selAneis = [];                           // anel em volta de cada ponto selecionado
 
     // Ordem de empilhamento no mapa. A caixa por cima do cabo não é estética: é o que faz o
     // clique cair no marcador, e não na alça de edição que o Google desenha no mesmo ponto.
@@ -51,7 +60,7 @@
         CEO:      { forma: 'ceo', cor: '#FF9100' },
         DC:       { forma: 'estrela', cor: '#1B3A6B' },
         PREDIO:   { forma: 'quadrado', cor: '#6A1B9A' },
-        POSTE:    { forma: 'circulo', cor: '#795548' },
+        POSTE:    { forma: 'circulo', cor: '#FF9100' },
         CTO_AP:   { forma: 'quadrado', cor: '#00ACC1' },
         CLIENTE:  { forma: 'gota', cor: '#2962FF' },
         RESERVA:  { forma: 'losango', cor: '#9E9E9E' },
@@ -64,7 +73,7 @@
         DC: 'bi-hdd-rack-fill', PREDIO: 'bi-building', POSTE: 'bi-signpost-2-fill',
         CEO: 'bi-diagram-3-fill', CLIENTE: 'bi-person-fill', CTO: 'bi-box-seam',
         CTO_AP: 'bi-buildings-fill', PROBLEMA: 'bi-exclamation-triangle-fill',
-        RESERVA: 'bi-bookmark-fill', FALHA: 'bi-exclamation-octagon-fill'
+        RESERVA: 'bi-bookmark-fill', FALHA: 'bi-exclamation-octagon-fill', PONTA: 'bi-record-circle'
     };
 
     function esc(s) {
@@ -117,6 +126,15 @@
         };
     }
 
+    /**
+     * Ponta livre de cabo: bolinha branca com o aro na cor do cabo. Pequena de propósito —
+     * não é uma peça da rede, é o lugar onde uma peça ainda vai entrar.
+     */
+    function iconePonta(cor) {
+        return { path: google.maps.SymbolPath.CIRCLE, scale: 6, fillColor: '#FFFFFF', fillOpacity: 1,
+                 strokeColor: cor || '#00E676', strokeWeight: 3 };
+    }
+
     function limpar() {
         marcadores.forEach(function (m) { m.setMap(null); });
         linhas.forEach(function (l) { l.setMap(null); });
@@ -126,8 +144,11 @@
 
     function visivel(tipo) {
         if (tipo === 'CTO' || tipo === 'CTO_AP') return camadas.CTO;
-        if (tipo === 'CEO') return camadas.CEO;
-        return camadas.OUTRAS;
+        if (tipo === 'PONTA') return camadas.CABOS;   // a ponta livre é do cabo, e some com ele
+        if (tipo === 'POSTE') return camadas.POSTES;
+        if (tipo === 'FALHA') return camadas.PROBLEMA;
+        if (tipo === 'CLIENTE') return camadas.PREDIO;  // tipo legado, sem camada própria
+        return camadas[tipo] !== false;
     }
 
     /**
@@ -169,8 +190,10 @@
         var motivos = {
             caixa: semRegiao,
             mover: semRegiao,
-            cabo:  semRegiao || (travas.ancoras < 2
-                ? 'Um cabo liga duas caixas: marque o POP e a primeira caixa antes.' : '')
+            selecionar: semRegiao,
+            // Desde a 0.9.6 o cabo pode terminar numa ponta livre: não precisa de duas caixas,
+            // mas continua saindo do POP — sem ele, não há de onde puxar o primeiro cabo.
+            cabo:  semRegiao || (!travas.pop ? 'Marque o POP antes: é dele que as fibras saem.' : '')
         };
         $.each(motivos, function (m, motivo) {
             $('.ftth-modo[data-modo="' + m + '"]')
@@ -211,6 +234,7 @@
 
         d.caixas.forEach(function (c) {
             if (!visivel(c.tipo)) return;
+            if (pendentes.ancoras[c.id]) return;   // ponta ancorada (pendente): já não é ponta
             // No modo Mover a posição que vale é a pendente, senão a caixa voltaria para
             // o lugar antigo a cada recarga da área visível.
             var pend = pendentes.caixas[c.id];
@@ -219,7 +243,7 @@
                     ? { lat: pend.lat, lng: pend.lng }
                     : { lat: parseFloat(c.lat), lng: parseFloat(c.lng) },
                 map: mapa,
-                icon: icone(c.tipo, c.cor, true),
+                icon: c.tipo === 'PONTA' ? iconePonta(c.cor) : icone(c.tipo, c.cor, true),
                 title: c.nome,
                 draggable: modo === 'mover',
                 // A caixa fica SEMPRE acima do cabo e das alças de edição dele. As alças
@@ -228,12 +252,12 @@
                 // arrastando a caixa.
                 zIndex: pend ? Z_CAIXA_ARRASTANDO : Z_CAIXA,
                 opacity: destaque && !destaque[c.id] ? 0.3 : 1,
-                label: mapa.getZoom() >= ((window.FTTH_MAPA || {}).rotulo_zoom || 17)
+                label: c.tipo !== 'PONTA' && mapa.getZoom() >= ((window.FTTH_MAPA || {}).rotulo_zoom || 17)
                     ? { text: c.nome, fontSize: '11px', color: '#22303F', className: 'ftth-rotulo' }
                     : null
             });
             // O destino do primeiro cabo pula enquanto o traçado não chega nele.
-            if (pontoEmDestaque && Number(c.id) === pontoEmDestaque) {
+            if (pontoEmDestaque && Number(c.id) === pontoEmDestaque && !destinoAlcancado()) {
                 m.setAnimation(google.maps.Animation.BOUNCE);
             }
             m.addListener('click', function () {
@@ -244,11 +268,20 @@
                         FTTH.toast('erro', 'Reserva não recebe cabo: ela fica no meio de um cabo já lançado.');
                         return;
                     }
+                    // Poste: o cabo PASSA por ele — vira vértice no lugar exato do poste.
+                    if (c.tipo === 'POSTE') {
+                        pontoTracado({ tipo: 'VERTICE', lat: parseFloat(c.lat), lng: parseFloat(c.lng) });
+                        return;
+                    }
                     pontoTracado({ tipo: 'CAIXA', id: parseInt(c.id, 10), nome: c.nome,
                                    lat: parseFloat(c.lat), lng: parseFloat(c.lng) });
                     return;
                 }
                 if (modo === 'mover') return;     // no modo Mover o clique é para arrastar
+                if (modo === 'selecionar') {
+                    cliqueSelecionar(c, m.getPosition());
+                    return;
+                }
                 abrirFicha(c.id);
             });
             if (modo === 'mover') {
@@ -262,8 +295,12 @@
                 m.addListener('dragend', function () {
                     atualizarContaMover();
                     // As alças do Google seguem a linha sozinhas: nada a redesenhar aqui.
+                    oferecerAncoragem(c, m);
                 });
             }
+            m.ftthCaixaId = Number(c.id);   // para o modo Selecionar achar o ponto
+            m.ftthTipo = c.tipo;            // para o modo Mover achar ponta livre e caixa
+            m.ftthNome = c.nome;
             marcadores.push(m);
         });
 
@@ -300,12 +337,13 @@
                     zIndex: Z_CABO
                 });
                 l.ftthVaoId = v.id;      // para o modo Mover achar a linha deste vão
+                l.ftthCor = v.cor_rota || '#00E676';   // a cor de volta depois do destaque da seleção
                 l.addListener('click', function (e) {
                     if (modo === 'mover') return;   // no modo Mover o clique é para editar
                     // Nos modos de desenho, clicar no cabo é clicar no mapa: a polilinha tem
                     // 5 px de espessura e engolia o clique, abrindo a ficha do cabo bem na
                     // hora em que o técnico queria marcar uma caixa em cima dele.
-                    if (modo === 'caixa' || modo === 'cabo') {
+                    if (modo === 'caixa' || modo === 'cabo' || modo === 'selecionar') {
                         cliqueNoMapa(e);
                         return;
                     }
@@ -365,6 +403,7 @@
                   + '<i class="bi-exclamation-triangle-fill"></i>&nbsp;parcial: aproxime o mapa</span>'
                 : '')
         );
+        destacarSelecao();
     }
 
     function painel(html) {
@@ -385,6 +424,14 @@
             onOk: function (c) {
                 if (c.tipo === 'RESERVA') {
                     painel(fichaReserva(c));
+                    return;
+                }
+                if (c.tipo === 'PONTA') {
+                    painel(fichaPonta(c));
+                    return;
+                }
+                if (c.tipo === 'POSTE') {
+                    painel(fichaPoste(c));
                     return;
                 }
                 var ocupadas = c.clientes.length;
@@ -539,6 +586,69 @@
     }
 
     /**
+     * Poste: não tem splitter, fusão nem diagrama — o cabo passa por ele. A ficha só diz onde
+     * ele está; as ações são as de qualquer ponto.
+     */
+    function fichaPoste(c) {
+        var quem = c.alterado_por || c.criado_por || '—';
+        var quando = c.alterado_em || c.criado_em || '';
+        return '<div class="ftth-ficha-topo">'
+          +   '<h3 class="ftth-painel-titulo">' + marcaDoTipo(c.tipo, c.cor) + ' ' + esc(c.nome) + '</h3>'
+          +   '<p class="ftth-sub">Poste · ' + esc(c.regiao) + '</p>'
+          + '</div>'
+          + '<dl class="ftth-ficha">'
+          +   linha('Origem', c.origem === 'kmz' ? 'importado do KMZ' : 'cadastro manual')
+          +   (c.observacao ? linha('Observação', esc(c.observacao)) : '')
+          + '</dl>'
+          + '<p class="ftth-ficha-autor">Por ' + esc(quem) + (quando ? ' · ' + esc(quando) : '') + '</p>'
+          + '<div class="ftth-ficha-acoes">'
+          +   '<button class="ftth-acao" id="fc-centralizar" data-lat="' + c.lat + '" data-lng="' + c.lng + '">'
+          +     '<i class="bi-geo-fill"></i> Ver no mapa</button>'
+          +   '<button class="ftth-acao" id="fc-editar" data-id="' + c.id + '">'
+          +     '<i class="bi-pencil-square"></i> Editar</button>'
+          +   '<button class="ftth-acao ftth-acao--perigo" id="fc-excluir" data-id="' + c.id + '"'
+          +     ' data-versao="' + c.versao + '" data-nome="' + esc(c.nome) + '">'
+          +     '<i class="bi-trash3-fill"></i> Excluir</button>'
+          + '</div>'
+          + '<p class="ftth-sub ftth-coord">Localização: <span class="mono" id="fc-coord">'
+          +   parseFloat(c.lat).toFixed(6) + ', ' + parseFloat(c.lng).toFixed(6) + '</span> '
+          +   '<button class="ftth-copiar" id="fc-copiar" title="Copiar">copiar</button></p>';
+    }
+
+    /**
+     * Ponta livre: não tem splitter, fusão nem diagrama. A ficha só diz de que cabo ela é e
+     * oferece os dois caminhos — virar um ponto de verdade, ou continuar o cabo dali.
+     */
+    function fichaPonta(c) {
+        var v = (c.cabos || [])[0] || null;
+        var ate = v ? (/^PONTA\./.test(v.sentido) ? 'outra ponta livre' : v.sentido) : '';
+        return '<div class="ftth-ficha-topo">'
+          +   '<h3 class="ftth-painel-titulo"><i class="bi-record-circle"></i> Ponta livre</h3>'
+          +   '<p class="ftth-sub">Ponta de cabo sem caixa · ' + esc(c.regiao) + '</p>'
+          + '</div>'
+          + '<dl class="ftth-ficha">'
+          +   linha('Cabo', v ? esc((v.cabo || 'sem nome') + ' · ' + v.tipo) : '—')
+          +   linha('Vai até', v ? esc(ate) : '—')
+          + '</dl>'
+          + '<div class="ftth-aviso">Para ancorar, transforme a ponta num ponto (CTO, CEO…) ou solte um '
+          +   'ponto em cima dela. Para seguir com o cabo, use Continuar cabo.</div>'
+          + '<div class="ftth-ficha-acoes">'
+          +   '<button class="ftth-acao" id="fc-centralizar" data-lat="' + c.lat + '" data-lng="' + c.lng + '">'
+          +     '<i class="bi-geo-fill"></i> Ver no mapa</button>'
+          +   '<button class="ftth-acao" id="fp-virar" data-id="' + c.id + '">'
+          +     '<i class="bi-geo-alt-fill"></i> Virar ponto</button>'
+          +   '<button class="ftth-acao" id="fp-continuar" data-id="' + c.id + '" data-lat="' + c.lat
+          +     '" data-lng="' + c.lng + '" data-nome="' + esc(v ? (v.cabo || 'cabo sem nome') : 'cabo')
+          +     '" data-tipo="' + esc(v ? v.tipo : '') + '" data-cor="' + esc(v ? v.cor_rota : '') + '"'
+          +     (v ? '' : ' disabled') + '>'
+          +     '<i class="bi-share-fill"></i> Continuar cabo</button>'
+          + '</div>'
+          + '<p class="ftth-sub ftth-coord">Localização: <span class="mono" id="fc-coord">'
+          +   parseFloat(c.lat).toFixed(6) + ', ' + parseFloat(c.lng).toFixed(6) + '</span> '
+          +   '<button class="ftth-copiar" id="fc-copiar" title="Copiar">copiar</button></p>';
+    }
+
+    /**
      * A marca do tipo, para títulos em HTML: a silhueta quando o tipo tem uma, senão o
      * ícone do painel. Mesma fonte do marcador do mapa — o desenho vive no PHP.
      */
@@ -610,20 +720,35 @@
         });
     }
 
-    function excluirCaixaMesmo(id, versao) {
+    function excluirCaixaMesmo(id, versao, manterCabos) {
         var cfg = window.FTTH_MAPA || {};
         FTTH.chamar({
             url: 'mapa.php?ajax=excluir_caixa',
             method: 'POST',
-            data: { csrf: cfg.csrf, id: id, versao: versao },
-            onOk: function () {
+            data: { csrf: cfg.csrf, id: id, versao: versao, manter_cabos: manterCabos ? 1 : 0 },
+            onOk: function (d) {
                 $('#painel').hide();
                 carregar();
-                FTTH.toast('ok', 'Caixa excluída.');
+                FTTH.toast('ok', d && d.ponta
+                    ? 'Caixa excluída. ' + plural(d.cabos, 'cabo ficou', 'cabos ficaram')
+                      + ' no mapa, com ponta livre no lugar dela.'
+                    : 'Caixa excluída.');
             },
             // O recado vai para o toast, e não para dentro da ficha: a ficha fecha, o toast
             // fica onde o operador está olhando.
-            onErro: function (m) { FTTH.toast('erro', m); }
+            onErro: function (m, resp) {
+                // Caixa com cabo (0.9.6): em vez de mandar apagar os cabos antes, oferece
+                // manter os cabos no mapa com uma ponta livre no lugar da caixa.
+                var e = resp && resp.errors && resp.errors[0];
+                if (!manterCabos && e && e.code === 'FTTH-TOP-016' && e.details && e.details.vaos > 0) {
+                    if (confirm(m + '\n\nExcluir mesmo assim, mantendo os cabos no mapa?\n'
+                            + 'Eles ficam com uma ponta livre aqui, e as fusões desta caixa são desfeitas.')) {
+                        excluirCaixaMesmo(id, versao, true);
+                    }
+                    return;
+                }
+                FTTH.toast('erro', m);
+            }
         });
     }
 
@@ -768,27 +893,70 @@
         }).always(function () { $b.prop('disabled', false); });
     }
 
+    /**
+     * Excluir cabo: o modal (mesmo desenho do "Excluir seleção") mostra antes o que sai junto —
+     * trechos, reservas e as fusões por caixa. Com fibra ligada, confirmar desfaz as ligações e
+     * exclui numa transação só (30/09/2026). Sem digitar nada: o modal já é a confirmação.
+     */
+    var caboExcluindo = null;
+
     function excluirCabo(v) {
+        FTTH.chamar({
+            url: 'mapa.php?ajax=cabo_previa&cabo=' + v.cabo_id,
+            onOk: function (p) {
+                caboExcluindo = { v: v, previa: p };
+                var nome = v.cabo_nome || ('Cabo ' + v.cabo_tipo);
+                var li = function (rotulo, valor, alerta) {
+                    return '<li' + (alerta ? ' class="alerta"' : '') + '><span>' + rotulo + '</span><b>'
+                         + valor + '</b></li>';
+                };
+                var html = '<p class="ftth-sub" style="margin:0 0 8px">Sai do mapa e continua no histórico.</p>'
+                    + '<ul class="ftth-lote-lista">'
+                    + li('Cabo', esc(nome + ' · ' + v.cabo_tipo))
+                    + li('Trechos de cabo', p.vaos)
+                    + (p.reservas ? li('Reservas nos trechos', p.reservas) : '')
+                    + (p.ligacoes ? li('Fusões desfeitas', p.ligacoes, true) : '')
+                    + '</ul>';
+                if (p.caixas.length) {
+                    html += '<div class="ftth-lote-detalhe">Fusões com fibra deste cabo, que saem junto '
+                          + '(o sinal para de chegar depois delas):<ul>'
+                          + p.caixas.map(function (c) {
+                              return '<li>' + esc(c.nome) + ' — ' + plural(parseInt(c.fibras, 10), 'fusão', 'fusões') + '</li>';
+                          }).join('') + '</ul></div>';
+                }
+                $('#xc-previa').html(html);
+                $('#xc-saida').empty();
+                $('#xc-excluir').prop('disabled', false);
+                $('#modal-excluir-cabo').show();
+            },
+            onErro: function (m) { FTTH.toast('erro', m); }
+        });
+    }
+
+    function confirmarExclusaoCabo() {
+        if (!caboExcluindo) return;
         var cfg = window.FTTH_MAPA || {};
-        var nome = v.cabo_nome || ('cabo ' + v.cabo_tipo);
-        if (!confirm('Excluir o ' + nome + ' (' + v.caixa_ini + ' → ' + v.caixa_fim + ')?\n\n'
-                   + 'O traçado sai do mapa. Se houver fibra ligada, a exclusão é recusada.')) {
-            return;
-        }
+        var v = caboExcluindo.v;
+        var nome = v.cabo_nome || ('Cabo ' + v.cabo_tipo);
+        var $b = $('#xc-excluir').prop('disabled', true);
         FTTH.chamar({
             url: 'mapa.php?ajax=excluir_cabo',
             method: 'POST',
-            data: { csrf: cfg.csrf, cabo: v.cabo_id },
-            onOk: function () {
+            data: { csrf: cfg.csrf, cabo: v.cabo_id,
+                    confirmacao: caboExcluindo.previa.ligacoes ? 'EXCLUIR' : '' },
+            onOk: function (d) {
+                $('#modal-excluir-cabo').hide();
                 $('#painel').hide();
                 caboAberto = null;
+                caboExcluindo = null;
                 carregar();
-                FTTH.toast('ok', nome + ' excluído.');
+                FTTH.toast('ok', nome + ' excluído'
+                    + (d && d.ligacoes_desfeitas ? ', com ' + plural(d.ligacoes_desfeitas, 'fusão desfeita',
+                                                                    'fusões desfeitas') : '') + '.');
             },
-            onErro: function (m, resp) {
-                // Quando a recusa é por fibra ligada, o servidor manda em quais caixas:
-                // cada uma vira uma linha do toast, para o técnico saber onde desconectar.
-                FTTH.toast('erro', m, caixasDoErro(resp));
+            onErro: function (m) {
+                $('#xc-saida').html('<div class="ftth-aviso ftth-aviso--erro">' + esc(m) + '</div>');
+                $b.prop('disabled', false);
             }
         });
     }
@@ -1167,7 +1335,7 @@
     function ajustarToasts() {
         var raiz = document.documentElement;
         var estreita = window.matchMedia && window.matchMedia('(max-width: 470px)').matches;
-        var card = $('#cabo-card:visible, #mover-card:visible, #regiao-card:visible').get(0);
+        var card = $('#cabo-card:visible, #mover-card:visible, #regiao-card:visible, #sel-card:visible, #sel-barra:visible').get(0);
         if (estreita && card) {
             var topo = card.getBoundingClientRect().top;
             raiz.style.setProperty('--ftth-toast-base', Math.max(20, window.innerHeight - topo + 8) + 'px');
@@ -1186,12 +1354,27 @@
     }
 
     function pontoTracado(p) {
-        if (!tracado.length && p.tipo !== 'CAIXA') {
-            FTTH.toast('erro', 'O cabo precisa começar em uma caixa.');
-            return;
-        }
         tracado.push(p);
         atualizarTracado();
+    }
+
+    /** O traçado já ancorou no destino do primeiro cabo? Aí ele para de pular. */
+    function destinoAlcancado() {
+        return tracado.some(function (p) {
+            return p.tipo === 'CAIXA' && Number(p.id) === pontoEmDestaque;
+        });
+    }
+
+    /** Liga ou desliga o pulo conforme o traçado: ancorou, para; o Desfazer tirou, volta. */
+    function atualizarPulo() {
+        if (!pontoEmDestaque) return;
+        var parar = destinoAlcancado();
+        marcadores.forEach(function (m) {
+            if (m.ftthCaixaId !== pontoEmDestaque) return;
+            var pulando = m.getAnimation() === google.maps.Animation.BOUNCE;
+            if (parar && pulando) m.setAnimation(null);
+            if (!parar && !pulando) m.setAnimation(google.maps.Animation.BOUNCE);
+        });
     }
 
     function atualizarTracado() {
@@ -1229,22 +1412,33 @@
         $('#cabo-contagem').text(tracado.length + ' ponto' + (tracado.length === 1 ? '' : 's')
             + ' · ' + caixas + ' caixa' + (caixas === 1 ? '' : 's'));
 
-        var ultimo = tracado[tracado.length - 1];
         atualizarFinalizar();
+        atualizarPulo();
+        // Desde a 0.9.6 as pontas podem ficar no vazio: viram ponta livre, onde um ponto
+        // pode ser solto depois.
         $('#cabo-dica').text(!tracado.length
-            ? 'Clique na caixa onde o cabo começa.'
-            : (ultimo.tipo === 'CAIXA'
-                ? 'Clique na rua para seguir, em outra caixa para ancorar, ou finalize.'
-                : 'Siga clicando na rua e termine em uma caixa.'));
+            ? 'Clique numa caixa ou no mapa onde o cabo começa.'
+            : (tracado.length === 1
+                ? 'Siga clicando na rua, ou numa caixa para ancorar.'
+                : 'Siga clicando, ou finalize: ponta sem caixa vira ponta livre.'));
     }
 
     function corCaboSelecionada() {
+        if (continuando) return continuando.cor;
         return $('#cb-cores .ftth-cor.ativo').data('cor') || '#00E676';
+    }
+
+    /** "Continuar cabo": o traçado já sai da ponta, na cor do cabo, sem o ⚙ de configuração. */
+    function iniciarContinuacao() {
+        iniciarTracado();
+        $('#cabo-config').hide();
+        $('#cabo-titulo').text('Continuando ' + continuando.nome + ' · ' + continuando.tipo);
+        pontoTracado(caboDesde);
     }
 
     function finalizarTracado() {
         if (!podeFinalizarCabo()) {
-            FTTH.toast('erro', 'O cabo precisa estar ancorado em duas caixas e terminar numa delas.');
+            FTTH.toast('erro', 'Marque ao menos o início e o fim do cabo.');
             return;
         }
         // A configuração já veio antes do desenho: finalizar é gravar.
@@ -1252,17 +1446,16 @@
     }
 
     /**
-     * Finalizar só acende com o cabo ancorado em duas caixas e terminando numa delas — o
-     * mesmo que o servidor exige. Botão apagado diz a regra antes do erro, não depois.
+     * Finalizar acende com dois pontos marcados — o mesmo que o servidor exige. As pontas sem
+     * caixa viram ponta livre (0.9.6); antes o cabo tinha de começar e terminar em caixa.
      */
     function podeFinalizarCabo() {
-        var caixas = tracado.filter(function (p) { return p.tipo === 'CAIXA'; }).length;
-        return caixas >= 2 && tracado[tracado.length - 1].tipo === 'CAIXA';
+        return tracado.length >= 2;
     }
 
     function atualizarFinalizar() {
         $('#cabo-finalizar').prop('disabled', !podeFinalizarCabo())
-            .attr('title', podeFinalizarCabo() ? '' : 'O cabo precisa estar ancorado em duas caixas');
+            .attr('title', podeFinalizarCabo() ? '' : 'Marque ao menos o início e o fim do cabo');
     }
 
     function desenhandoCabo() { return $('#cabo-card').is(':visible'); }
@@ -1278,7 +1471,7 @@
         var caixas = tracado.filter(function (p) { return p.tipo === 'CAIXA'; }).length;
         $('#cabo-resumo').text(desenhando
             ? tracado.length + ' ponto(s) marcados · ' + caixas + ' caixa(s). O traçado continua na tela.'
-            : 'Configure e desenhe: o traçado começa numa caixa e termina em outra.');
+            : 'Configure e desenhe. Ponta sem caixa vira ponta livre, onde um ponto pode entrar depois.');
         $('#cb-saida').empty();
         $('#modal-cabo').show();
         setTimeout(function () { $('#cb-nome').trigger('focus'); }, 50);
@@ -1294,7 +1487,7 @@
         if (caboDesde) {
             pontoTracado(caboDesde);             // primeiros passos: o cabo já sai do POP
         } else {
-            FTTH.toast('info', 'Clique na caixa onde o cabo começa.');
+            FTTH.toast('info', 'Clique numa caixa ou no mapa onde o cabo começa.');
         }
     }
 
@@ -1309,6 +1502,7 @@
                 nome: $('#cb-nome').val(), fabricante: $('#cb-fabricante').val(),
                 cabo_tipo_id: $('#cb-tipo').val(), padrao_cores: $('#cb-padrao').val(),
                 cor_rota: corCaboSelecionada(),
+                continuar_de: continuando ? continuando.ponta : 0,
                 pontos: JSON.stringify(tracado.map(function (p) {
                     return p.tipo === 'CAIXA'
                         ? { tipo: 'CAIXA', id: p.id }
@@ -1326,8 +1520,9 @@
                 // isso), e sem esta linha o cabo recém-criado só aparecia no próximo
                 // movimento do mapa.
                 carregar();
-                FTTH.toast('ok', d.tipo + ' criado: ' + d.vaos.length + ' vão(s), '
-                    + Math.round(d.metros) + ' m.');
+                FTTH.toast('ok', d.continuado
+                    ? 'Cabo continuado a partir da ponta livre: agora com ' + Math.round(d.metros) + ' m.'
+                    : d.tipo + ' criado: ' + d.vaos.length + ' vão(s), ' + Math.round(d.metros) + ' m.');
             },
             // O traçado continua na tela: o usuário corrige (⚙ ou Desfazer) e finaliza de novo.
             onErro: function (m) { FTTH.toast('erro', m); }
@@ -1350,13 +1545,17 @@
         if (modo === 'mover' && novo !== 'mover') {
             sairDoModoMover();
         }
+        if (modo === 'selecionar' && novo !== 'selecionar') {
+            limparSelecao();
+            $('#sel-card, #sel-barra, #modal-lote, #modal-cor-lote').hide();
+        }
 
         modo = novo;
         $('.ftth-modo').removeClass('ativo');
         $('.ftth-modo[data-modo="' + novo + '"]').addClass('ativo');
         if (mapa) {
             mapa.setOptions({
-                draggableCursor: (novo === 'caixa' || novo === 'cabo') ? 'crosshair' : null
+                draggableCursor: modoDeDesenho(novo) ? 'crosshair' : null
             });
             // A mãozinha em cima do cabo promete abrir a ficha. Nos modos de desenho o
             // clique ali marca ponto, então o cursor tem de dizer a mesma coisa que o mapa.
@@ -1375,7 +1574,14 @@
             // Com o assistente na tela a dica já está no balão; o toast repetiria a frase.
             if (!presetPonto) FTTH.toast('info', 'Clique no mapa para marcar o ponto.');
         } else if (novo === 'cabo') {
-            abrirConfigCabo();          // configura primeiro; o traçado começa no "Desenhar"
+            if (continuando) {
+                iniciarContinuacao();   // mesmo cabo: nada a configurar
+            } else {
+                abrirConfigCabo();      // configura primeiro; o traçado começa no "Desenhar"
+            }
+        } else if (novo === 'selecionar') {
+            $('#painel').hide();
+            iniciarSelecao();
         } else if (novo === 'mover') {
             FTTH.toast('info', 'Arraste pontos. Clique num cabo para soltar os vértices.');
             $('#mover-card').show();
@@ -1393,8 +1599,282 @@
         if (novo !== 'cabo') {
             limparTracado();
             $('#modal-cabo').hide();
+            continuando = null;
+            $('#cabo-config').show();
+            $('#cabo-titulo').text('Traçando cabo');
         }
         avisarMudanca();
+    }
+
+    /* ------------------------------------------------------------------ modo Selecionar */
+
+    /*
+     * Passo 1: cada clique é um canto da área (padrão UpperX). Passo 2, depois do Concluir
+     * área: o servidor devolve o que ficou dentro (Lote::previa) e a barra de baixo oferece as
+     * ações. Clicar num ponto tira ou põe ele na seleção, e a prévia é refeita no servidor —
+     * a tela nunca calcula sozinha o que sai, para o que ela mostra ser o que o banco faz.
+     */
+    // Magenta: não existe na imagem de satélite (árvore, telhado, asfalto, terra) nem na paleta
+    // de cabos. O verde de antes sumia no meio das árvores (30/09/2026).
+    var COR_AREA = '#FF2BD6';
+    var COR_SAI  = '#FF5252';     // cabo que vai sair: o vermelho é o aviso antes do botão
+
+    function iniciarSelecao() {
+        limparSelecao();
+        $('#sel-barra').hide();
+        $('#sel-card').show();
+        atualizarArea();
+        ajustarToasts();
+    }
+
+    function limparSelecao() {
+        areaSel = [];
+        if (areaPoligono) { areaPoligono.setMap(null); areaPoligono = null; }
+        areaPinos.forEach(function (p) { p.setMap(null); });
+        areaPinos = [];
+        selecao = null;
+        destacarSelecao();
+    }
+
+    function verticeDaArea(latLng) {
+        areaSel.push(latLng);
+        atualizarArea();
+    }
+
+    function atualizarArea() {
+        var n = areaSel.length;
+        if (!areaPoligono && n) {
+            areaPoligono = new google.maps.Polygon({
+                map: mapa, strokeColor: COR_AREA, strokeOpacity: 0.95, strokeWeight: 2,
+                fillColor: COR_AREA, fillOpacity: 0.18, zIndex: 1
+            });
+            // Clique dentro da área continua marcando canto: o polígono fica por cima do
+            // mapa e, sem isto, engoliria o clique.
+            areaPoligono.addListener('click', cliqueNoMapa);
+        }
+        if (areaPoligono) areaPoligono.setPaths(areaSel);
+
+        areaPinos.forEach(function (p) { p.setMap(null); });
+        areaPinos = areaSel.map(function (p) {
+            return new google.maps.Marker({
+                position: p, map: mapa, clickable: false, zIndex: Z_CAIXA + 50,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 4.5, fillColor: '#fff',
+                        fillOpacity: 1, strokeColor: COR_AREA, strokeWeight: 2 }
+            });
+        });
+
+        $('#sel-conta').text(plural(n, 'ponto', 'pontos'));
+        $('#sel-dica').text(n < 3 ? 'Clique no mapa para marcar os cantos da área.'
+                                  : 'Feche a área com Concluir área.');
+        $('#sel-desfazer').prop('disabled', n === 0);
+        $('#sel-concluir').prop('disabled', n < 3);
+    }
+
+    function concluirArea() {
+        if (areaSel.length < 3) return;
+        var cfg = window.FTTH_MAPA || {};
+        var $b = $('#sel-concluir').prop('disabled', true);
+        FTTH.chamar({
+            url: 'mapa.php?ajax=selecionar',
+            method: 'POST',
+            data: { csrf: cfg.csrf, regiao: regiao,
+                    poligono: JSON.stringify(areaSel.map(function (p) { return [p.lat(), p.lng()]; })) },
+            onOk: aplicarSelecao,
+            onErro: function (m) { FTTH.toast('erro', m); $b.prop('disabled', false); }
+        });
+    }
+
+    /** A prévia do servidor vira o destaque no mapa e a barra de baixo. */
+    function aplicarSelecao(d) {
+        if (!d.caixas.length && !d.protegidas.length) {
+            FTTH.toast('info', 'Nenhum ponto dentro da área. Ajuste os cantos ou desenhe outra.');
+            $('#sel-concluir').prop('disabled', areaSel.length < 3);
+            selecao = null;
+            destacarSelecao();
+            return;
+        }
+        if (d.protegidas.length && (!selecao || selecao.protegidas.length !== d.protegidas.length)) {
+            FTTH.toast('info', 'DC/POP não é excluído em lote (' + d.protegidas.map(function (c) {
+                return c.nome; }).join(', ') + '). Exclua pela ficha, se for o caso.');
+        }
+        selecao = d;
+        if (areaPoligono) areaPoligono.setOptions({ fillOpacity: 0.06, clickable: false });
+        areaPinos.forEach(function (p) { p.setMap(null); });
+        areaPinos = [];
+
+        $('#sel-card').hide();
+        $('#sel-n-caixas').text(d.caixas.length);
+        $('#sel-n-cabos').text(d.cabos.length);
+        $('#sel-excluir').prop('disabled', !d.caixas.length);
+        $('#sel-barra').show();
+        ajustarToasts();
+        destacarSelecao();
+    }
+
+    /** Clique num ponto: durante o desenho é um canto; com a seleção feita, tira ou põe. */
+    function cliqueSelecionar(c, pos) {
+        if (!selecao) {
+            verticeDaArea(pos);
+            return;
+        }
+        var id = Number(c.id);
+        var ids = selecao.caixas.concat(selecao.protegidas).map(function (x) { return Number(x.id); });
+        var i = ids.indexOf(id);
+        if (i >= 0) ids.splice(i, 1); else ids.push(id);
+
+        var cfg = window.FTTH_MAPA || {};
+        FTTH.chamar({
+            url: 'mapa.php?ajax=selecionar',
+            method: 'POST',
+            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(ids) },
+            onOk: function (d) {
+                if (!d.caixas.length && !d.protegidas.length) {
+                    iniciarSelecao();       // tirou o último: volta a desenhar
+                    return;
+                }
+                aplicarSelecao(d);
+            },
+            onErro: function (m) { FTTH.toast('erro', m); }
+        });
+    }
+
+    /** Anel nos pontos que saem e vermelho nos cabos que saem. Roda a cada redesenho. */
+    function destacarSelecao() {
+        selAneis.forEach(function (a) { a.setMap(null); });
+        selAneis = [];
+        var caixas = {}, vaos = {};
+        if (selecao) {
+            selecao.caixas.forEach(function (c) { caixas[c.id] = true; });
+            selecao.vaos.forEach(function (id) { vaos[id] = true; });
+        }
+        marcadores.forEach(function (m) {
+            if (!caixas[m.ftthCaixaId]) return;
+            selAneis.push(new google.maps.Marker({
+                position: m.getPosition(), map: mapa, clickable: false, zIndex: Z_CAIXA - 1,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 19, strokeColor: COR_AREA,
+                        strokeWeight: 3, fillColor: COR_AREA, fillOpacity: 0.2 }
+            }));
+        });
+        linhas.forEach(function (l) {
+            var sai = !!vaos[l.ftthVaoId];
+            l.setOptions({ strokeColor: sai ? COR_SAI : l.ftthCor, zIndex: sai ? Z_CABO + 1 : Z_CABO });
+        });
+    }
+
+    function abrirExclusaoLote() {
+        if (!selecao || !selecao.caixas.length) return;
+        var r = selecao.resumo;
+        var tipos = Object.keys(r.por_tipo).map(function (t) {
+            return r.por_tipo[t] + ' ' + (ROTULO_TIPO[t] || t);
+        }).join(', ');
+        var li = function (rotulo, valor, alerta) {
+            return '<li' + (alerta ? ' class="alerta"' : '') + '><span>' + rotulo + '</span><b>'
+                 + valor + '</b></li>';
+        };
+        var cabos = [];
+        if (r.cabos_excluidos) cabos.push(r.cabos_excluidos + ' inteiro(s)');
+        if (r.cabos_encurtados) cabos.push(r.cabos_encurtados + ' encurtado(s)');
+        if (r.cabos_partidos) cabos.push(r.cabos_partidos + ' partido(s) em dois');
+
+        var html = '<p class="ftth-sub" style="margin:0 0 8px">Sai do mapa e continua no histórico. '
+                 + 'Cabo que liga um ponto de dentro a um de fora sai inteiro até o ponto de fora.</p>'
+                 + '<ul class="ftth-lote-lista">'
+                 + li('Pontos' + (tipos ? ' <small>(' + esc(tipos) + ')</small>' : ''), r.caixas)
+                 + (r.vaos ? li('Trechos de cabo', r.vaos + (cabos.length ? ' <small>· ' + cabos.join(', ')
+                                + '</small>' : '')) : '')
+                 + (r.reservas ? li('Reservas nos trechos', r.reservas) : '')
+                 + (r.ligacoes ? li('Fusões desfeitas', r.ligacoes) : '')
+                 + (r.splitters ? li('Splitters', r.splitters) : '')
+                 + (r.clientes ? li('Clientes desvinculados', r.clientes, true) : '')
+                 + '</ul>';
+        if (selecao.ligacoes_fora.length) {
+            html += '<div class="ftth-lote-detalhe">Fusões em pontos que <b>ficam</b>, porque a fibra '
+                  + 'delas sai junto:<ul>' + selecao.ligacoes_fora.map(function (x) {
+                      return '<li>' + esc(x.caixa) + ' — ' + plural(x.ligacoes, 'fusão', 'fusões') + '</li>';
+                  }).join('') + '</ul></div>';
+        }
+        if (selecao.clientes.length) {
+            html += '<div class="ftth-aviso ftth-aviso--erro" style="margin:0 0 10px">'
+                  + '<b>' + plural(selecao.clientes.length, 'cliente perde', 'clientes perdem')
+                  + ' a porta:</b><ul style="margin:4px 0 0 16px;padding:0;max-height:140px;overflow:auto">'
+                  + selecao.clientes.map(function (c) {
+                      return '<li>' + esc(c.login) + ' — ' + esc(c.caixa) + ' / ' + esc(c.splitter)
+                           + ' porta ' + c.porta + '</li>';
+                  }).join('') + '</ul></div>';
+        }
+        $('#lote-previa').html(html);
+        $('#lote-confirma').toggle(selecao.clientes.length > 0);
+        $('#lote-confirmacao').val('');
+        $('#lote-saida').empty();
+        $('#lote-excluir').prop('disabled', false);
+        $('#modal-lote').show();
+        if (selecao.clientes.length) setTimeout(function () { $('#lote-confirmacao').trigger('focus'); }, 50);
+    }
+
+    /** Botão Cor da seleção: a paleta do cadastro, aplicada a todos os pontos selecionados. */
+    function abrirCorLote() {
+        if (!selecao) return;
+        var n = selecao.caixas.length + selecao.protegidas.length;
+        $('#lc-texto').text('Pinta ' + plural(n, 'ponto selecionado', 'pontos selecionados')
+            + '. A ponta livre fica de fora: ela tem a cor do cabo.');
+        $('#lc-cores .ftth-cor').removeClass('ativo');
+        $('#lc-saida').empty();
+        $('#lc-aplicar').prop('disabled', true);
+        $('#modal-cor-lote').show();
+    }
+
+    function aplicarCorLote() {
+        var cor = $('#lc-cores .ftth-cor.ativo').data('cor');
+        if (!selecao || !cor) return;
+        var cfg = window.FTTH_MAPA || {};
+        var ids = selecao.caixas.concat(selecao.protegidas).map(function (c) { return c.id; });
+        var $b = $('#lc-aplicar').prop('disabled', true);
+        FTTH.chamar({
+            url: 'mapa.php?ajax=cor_lote',
+            method: 'POST',
+            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(ids), cor: cor },
+            onOk: function (d) {
+                $('#modal-cor-lote').hide();
+                FTTH.toast('ok', plural(d.alterados, 'ponto pintado', 'pontos pintados') + '.');
+                definirModo('navegar');   // pintou: a seleção acabou, como no Excluir
+                carregar();
+            },
+            onErro: function (m) {
+                $('#lc-saida').html('<div class="ftth-aviso ftth-aviso--erro">' + esc(m) + '</div>');
+                $b.prop('disabled', false);
+            }
+        });
+    }
+
+    function confirmarExclusaoLote() {
+        if (!selecao) return;
+        if (selecao.clientes.length && $.trim($('#lote-confirmacao').val()).toUpperCase() !== 'EXCLUIR') {
+            $('#lote-saida').html('<div class="ftth-aviso ftth-aviso--erro">Digite EXCLUIR para confirmar.</div>');
+            $('#lote-confirmacao').trigger('focus');
+            return;
+        }
+        var cfg = window.FTTH_MAPA || {};
+        var $b = $('#lote-excluir').prop('disabled', true);
+        FTTH.chamar({
+            url: 'mapa.php?ajax=excluir_lote',
+            method: 'POST',
+            data: { csrf: cfg.csrf, regiao: regiao,
+                    caixas: JSON.stringify(selecao.caixas.map(function (c) { return c.id; })),
+                    confirmacao: $('#lote-confirmacao').val() },
+            onOk: function (d, resp) {
+                var r = d.resumo;
+                $('#modal-lote').hide();
+                mostrarAvisos(resp, 'Excluídos: ' + plural(r.caixas, 'ponto', 'pontos')
+                    + (r.vaos ? ' e ' + plural(r.vaos, 'trecho de cabo', 'trechos de cabo') : '') + '.');
+                definirModo('navegar');   // excluiu: a seleção acabou (limpa a área e os cards)
+                carregar();
+            },
+            // Nada foi gravado — é uma transação só —, então a seleção continua na tela.
+            onErro: function (m) {
+                $('#lote-saida').html('<div class="ftth-aviso ftth-aviso--erro">' + esc(m) + '</div>');
+                $b.prop('disabled', false);
+            }
+        });
     }
 
     /* ------------------------------------------------------------------ modo Mover */
@@ -1410,7 +1890,8 @@
     var LIMITE_EDITAVEIS = 80;
 
     function contarPendentes() {
-        return Object.keys(pendentes.caixas).length + Object.keys(pendentes.vaos).length;
+        return Object.keys(pendentes.caixas).length + Object.keys(pendentes.vaos).length
+             + Object.keys(pendentes.ancoras).length;
     }
 
     function atualizarContaMover() {
@@ -1420,7 +1901,7 @@
     }
 
     function sairDoModoMover() {
-        pendentes = { caixas: {}, vaos: {} };
+        pendentes = { caixas: {}, vaos: {}, ancoras: {} };
         $('#mover-card').hide();
         ajustarToasts();
         carregar();                     // volta o que está no banco
@@ -1439,6 +1920,9 @@
      * justamente o que pode estar torto depois de um arrasto acidental na alça da ponta.
      */
     function posicaoDaCaixa(caixaId) {
+        // Ponta livre ancorada (pendente): a ponta do cabo já é desenhada no ponto.
+        var ancora = pendentes.ancoras[caixaId];
+        if (ancora) return posicaoDaCaixa(ancora.caixa);
         var pend = pendentes.caixas[caixaId];
         if (pend) return [pend.lat, pend.lng];
         var achada = null;
@@ -1612,30 +2096,38 @@
         Object.keys(pendentes.caixas).forEach(function (id) {
             nomesMovidos[id] = pendentes.caixas[id].nome;
         });
-        // Reserva arrastada não é candidata a emenda: o servidor a cola no cabo sozinho.
+        // Reserva arrastada não é candidata a emenda: o servidor a cola no cabo sozinho. Ponta
+        // livre também não: ela não emenda cabo (a pergunta dela é outra, feita ao soltar).
         var reservas = {};
         Object.keys(pendentes.caixas).forEach(function (id) {
-            if (pendentes.caixas[id].tipo === 'RESERVA') reservas[id] = true;
+            var t = pendentes.caixas[id].tipo;
+            if (t === 'RESERVA' || t === 'PONTA' || t === 'POSTE') reservas[id] = true;
         });
-        if (!caixas.length && !vaos.length) return;
+        var ancoras = Object.keys(pendentes.ancoras).map(function (id) {
+            return { ponta: parseInt(id, 10), caixa: pendentes.ancoras[id].caixa };
+        });
+        if (!caixas.length && !vaos.length && !ancoras.length) return;
 
         var $b = $('#mover-concluir').prop('disabled', true);
         FTTH.chamar({
             url: 'mapa.php?ajax=mover',
             method: 'POST',
-            data: { csrf: cfg.csrf, caixas: JSON.stringify(caixas), vaos: JSON.stringify(vaos) },
+            data: { csrf: cfg.csrf, caixas: JSON.stringify(caixas), vaos: JSON.stringify(vaos),
+                    ancoras: JSON.stringify(ancoras) },
             onOk: function (d) {
                 // Guarda antes de limpar: a oferta de emenda precisa saber onde cada caixa parou.
                 var movidas = caixas.filter(function (c) { return !reservas[c.id]; }).map(function (c) {
                     return { id: c.id, nome: nomesMovidos[c.id] || 'A caixa',
                              lat: c.lat, lng: c.lng };
                 });
-                pendentes = { caixas: {}, vaos: {} };
+                pendentes = { caixas: {}, vaos: {}, ancoras: {} };
                 // Gravou: a edição acabou. O card se fecha e o mapa volta ao modo Navegar,
                 // que é onde o técnico confere o resultado do que acabou de fazer.
                 definirModo('navegar');
                 FTTH.toast('ok', 'Mapa atualizado: ' + d.caixas + ' caixa(s) e '
-                    + d.vaos + ' traçado(s). Os comprimentos foram recalculados.');
+                    + d.vaos + ' traçado(s)'
+                    + (d.ancoras ? ', ' + d.ancoras + ' ponta(s) ancorada(s)' : '')
+                    + '. Os comprimentos foram recalculados.');
                 oferecerEmendaEmFila(movidas);
             },
             // Nada foi gravado — o lote é uma transação só —, então as pendências ficam
@@ -1648,13 +2140,21 @@
      * O que um clique no mapa faz, por modo. Vive numa função só porque o clique pode chegar
      * de dois lugares: do mapa e de cima de um cabo, que é um objeto por cima do mapa.
      */
+    function modoDeDesenho(m) {
+        return m === 'caixa' || m === 'cabo' || m === 'selecionar';
+    }
+
     function cursorDoCabo() {
-        return (modo === 'caixa' || modo === 'cabo') ? 'crosshair' : 'pointer';
+        return modoDeDesenho(modo) ? 'crosshair' : 'pointer';
     }
 
     function cliqueNoMapa(e) {
         if (modo === 'caixa') {
             marcarPonto(e.latLng);
+            return;
+        }
+        if (modo === 'selecionar') {
+            if (!selecao) verticeDaArea(e.latLng);
             return;
         }
         if (modo === 'cabo') {
@@ -1681,8 +2181,8 @@
         $('#nc-ponto').text('Ponto: ' + latLng.lat().toFixed(6) + ', ' + latLng.lng().toFixed(6));
         // Clicou em cima de um cabo? A pergunta vem agora, antes do cadastro: a decisão é
         // sobre o ponto, e escolher o tipo da caixa depois é o passo natural.
-        // Reserva não emenda: se o tipo já está escolhido, a pergunta nem aparece.
-        if (tipoSelecionado() === 'RESERVA') {
+        // Reserva e poste não emendam: se o tipo já está escolhido, a pergunta nem aparece.
+        if (tipoSelecionado() === 'RESERVA' || tipoSelecionado() === 'POSTE') {
             abrirModalCaixa();
             return;
         }
@@ -1711,9 +2211,9 @@
 
     /** Nome do tipo para os textos da tela: "Editar CTO", "Reserva criada". */
     var ROTULO_TIPO = { CTO: 'CTO', CEO: 'CEO', DC: 'DC / POP', PREDIO: 'prédio',
-                        PROBLEMA: 'problema', RESERVA: 'reserva' };
+                        PROBLEMA: 'problema', RESERVA: 'reserva', PONTA: 'ponta livre', POSTE: 'poste' };
 
-    var TIPOS_EM_SEQUENCIA = { CTO: true, CEO: true, RESERVA: true };
+    var TIPOS_EM_SEQUENCIA = { CTO: true, CEO: true, RESERVA: true, POSTE: true };
 
     /** Os metros só existem para a Reserva; o resto do modal é igual para todo tipo. */
     function camposDoTipo() {
@@ -1828,6 +2328,9 @@
                 $('#modal-caixa').hide();
                 carregar();
 
+                if (d.ponta_absorvida) {
+                    FTTH.toast('ok', nome + ' assumiu a ponta livre: o cabo agora termina nele.');
+                }
                 var seguir = function () {
                     if (sequencia) {
                         // Continua no modo Caixa: o próximo clique já marca a caixa seguinte.
@@ -1840,7 +2343,7 @@
 
                 // A emenda já foi decidida no clique; agora que a caixa existe, aplicamos.
                 // Reserva nunca emenda: ela fica em cima do cabo, que continua inteiro.
-                if (d.tipo === 'RESERVA') emendaDesejada = null;
+                if (d.tipo === 'RESERVA' || d.tipo === 'POSTE') emendaDesejada = null;
                 if (emendaDesejada) {
                     var vao = emendaDesejada.vao;
                     emendaDesejada = null;
@@ -2007,14 +2510,15 @@
     var pontosCarregados = false;
     var filtroPontos = 'todos';           // todos | sem_sinal | sem_splitter
     var gruposFechados = {};
-    var ORDEM_GRUPO = ['CTO', 'CEO', 'DC', 'PREDIO', 'RESERVA', 'PROBLEMA'];
+    var ORDEM_GRUPO = ['CTO', 'CEO', 'DC', 'PREDIO', 'POSTE', 'RESERVA', 'PROBLEMA'];
     var ROTULO_GRUPO = { CTO: 'CTO', CEO: 'CEO', DC: 'DC / POP', PREDIO: 'Prédio',
-                         RESERVA: 'Reserva', PROBLEMA: 'Problema' };
-    var ROTULO_FILTRO = { sem_sinal: 'sem sinal', sem_splitter: 'sem splitter' };
+                         POSTE: 'Postes', RESERVA: 'Reserva', PROBLEMA: 'Problema' };
+    var ROTULO_FILTRO = { sem_sinal: 'sem sinal', sem_splitter: 'sem splitter', postes: 'postes' };
 
     /** Os dois filtros olham só CTO e CEO — e é o servidor quem diz quem é (com_sinal != null). */
     function atendeFiltro(p, f) {
         if (f === 'todos') return true;
+        if (f === 'postes') return p.tipo === 'POSTE';
         if (p.com_sinal === null || p.com_sinal === undefined) return false;
         if (f === 'sem_sinal') return !p.com_sinal;
         if (f === 'sem_splitter') return (parseInt(p.splitters, 10) || 0) === 0;
@@ -2101,7 +2605,12 @@
         });
         $('#conta-sem-sinal').text(pontosCarregados ? semSinal : '');
         $('#conta-sem-splitter').text(pontosCarregados ? semSplitter : '');
-        $('#gaveta-aba').toggleClass('filtrando', filtroPontos !== 'todos');
+        var postes = pontos.filter(function (p) { return p.tipo === 'POSTE'; }).length;
+        $('#conta-postes').text(pontosCarregados ? postes : '');
+        var termo = $.trim($('#pontos-busca').val() || '').toLowerCase();
+        var filtrando = filtroPontos !== 'todos' || termo !== '';
+        $('#gaveta-aba').toggleClass('filtrando', filtrando);
+        if (!filtrando || !pontosCarregados) $('#pontos-filtro').hide();
 
         if (!regiao) {
             $l.html('<p class="ftth-gaveta-vazio">Escolha uma região na aba Regiões.</p>');
@@ -2112,19 +2621,28 @@
             return;
         }
 
-        var termo = $.trim($('#pontos-busca').val() || '').toLowerCase();
-        var grupos = {};
+        var grupos = {}, exibidos = 0;
         pontos.forEach(function (p) {
             if (!atendeFiltro(p, filtroPontos)) return;
             if (termo && String(p.nome).toLowerCase().indexOf(termo) < 0) return;
             var g = p.tipo === 'CTO_AP' ? 'CTO' : p.tipo;
             (grupos[g] = grupos[g] || []).push(p);
+            exibidos++;
         });
+        // Filtro ou busca ligados: o selo embaixo de "Pontos" mostra quantos estão à vista,
+        // no mesmo lugar do número das Camadas — a bolinha da aba lateral sozinha passava batido.
+        if (filtrando) {
+            $('#pontos-filtro').text(exibidos).attr('title', 'Filtro: '
+                + (filtroPontos !== 'todos' ? ROTULO_FILTRO[filtroPontos] : 'todos')
+                + (termo ? ' · busca "' + termo + '"' : '')).show();
+        }
         var ordem = function (g) { var i = ORDEM_GRUPO.indexOf(g); return i < 0 ? 99 : i; };
         var chaves = Object.keys(grupos).sort(function (a, b) { return ordem(a) - ordem(b); });
 
         if (!chaves.length) {
-            $l.html('<p class="ftth-gaveta-vazio">' + (filtroPontos !== 'todos'
+            $l.html('<p class="ftth-gaveta-vazio">' + (filtroPontos === 'postes'
+                ? 'Nenhum poste nesta região.'
+                : filtroPontos !== 'todos'
                 ? 'Nenhuma CTO ou CEO ' + ROTULO_FILTRO[filtroPontos] + ' nesta região.'
                 : (termo ? 'Nenhum ponto com "' + esc(termo) + '".' : 'Nenhum ponto nesta região ainda.'))
                 + '</p>');
@@ -2631,7 +3149,7 @@
             definirModo($(this).data('modo'));
         });
         if (cfg.passos) {
-            travas = { pop: !!cfg.passos.feitos.pop, ancoras: parseInt(cfg.passos.ancoras, 10) || 0 };
+            travas = { pop: !!cfg.passos.feitos.pop };
         }
         aplicarTravas();
 
@@ -2641,7 +3159,7 @@
             $(this).addClass('ativo');
             camposDoTipo();
             // Na edição o nome é o que o ponto já tem; sugerir outro apagaria o dele.
-            if (!editando) sugerirNome('');
+            if (!editando || editando.virar) sugerirNome('');
             if (pinTemporario) pinTemporario.setIcon(icone(tipoSelecionado(), corSelecionada(), true));
         });
         $(document).on('click', '.ftth-cor', function () {
@@ -2650,8 +3168,33 @@
             if (pinTemporario) pinTemporario.setIcon(icone(tipoSelecionado(), corSelecionada(), true));
         });
 
+        // Modo Selecionar: card do desenho da área, barra da seleção e modal de exclusão.
+        $('#sel-desfazer').on('click', function () {
+            areaSel.pop();
+            atualizarArea();
+        });
+        $('#sel-concluir').on('click', concluirArea);
+        $('#sel-cancelar').on('click', function () { definirModo('navegar'); });
+        $('#sel-nova').on('click', iniciarSelecao);
+        $('#sel-excluir').on('click', abrirExclusaoLote);
+        $('#sel-cor').on('click', abrirCorLote);
+        // A paleta daqui é só deste modal: o stopPropagation impede que o handler geral das
+        // .ftth-cor (o do cadastro de ponto) mexa na cor escolhida lá.
+        $('#lc-cores').on('click', '.ftth-cor', function (e) {
+            e.stopPropagation();
+            $('#lc-cores .ftth-cor').removeClass('ativo');
+            $(this).addClass('ativo');
+            $('#lc-aplicar').prop('disabled', false);
+        });
+        $('#lc-aplicar').on('click', aplicarCorLote);
+        $('#lc-cancelar, #lc-fechar').on('click', function () { $('#modal-cor-lote').hide(); });
+        $('#lote-excluir').on('click', confirmarExclusaoLote);
+        $('#lote-confirmacao').on('keydown', function (e) { if (e.key === 'Enter') confirmarExclusaoLote(); });
+        $('#lote-cancelar, #lote-fechar').on('click', function () { $('#modal-lote').hide(); });
+
         // Card flutuante do traçado
         $('#cabo-desfazer').on('click', function () {
+            if (continuando && tracado.length <= 1) return;   // a ponta de partida fica
             tracado.pop();
             atualizarTracado();
         });
@@ -2682,6 +3225,11 @@
         });
         $(document).on('click', '#fb-excluir', function () {
             if (caboAberto) excluirCabo(caboAberto);
+        });
+        $('#xc-excluir').on('click', confirmarExclusaoCabo);
+        $('#xc-cancelar, #xc-fechar').on('click', function () {
+            $('#modal-excluir-cabo').hide();
+            caboExcluindo = null;
         });
         $(document).on('click', '#fb-centralizar', function () { enquadrarVao(caboAberto); });
 
@@ -2718,6 +3266,13 @@
             camadas[this.value] = this.checked;
             atualizarContaCamadas();
             carregar();
+            // Grava na hora: fechar a página ou fazer logoff não pode devolver a camada.
+            FTTH.chamar({
+                url: 'mapa.php?ajax=camadas',
+                method: 'POST',
+                data: { csrf: (window.FTTH_MAPA || {}).csrf, camadas: JSON.stringify(camadas) },
+                onErro: function (m) { FTTH.toast('erro', 'A camada não foi gravada: ' + m); }
+            });
         });
 
         // O menu de camadas fica aberto enquanto se marcam várias de uma vez; fecha ao
@@ -2849,6 +3404,35 @@
                 onErro: function (m) { FTTH.toast('erro', m); }
             });
         });
+        // Ponta livre vira ponto pela edição de sempre: é o mesmo registro, com o tipo e o
+        // nome que o usuário der — e os cabos continuam presos nele.
+        $(document).on('click', '#fp-virar', function () {
+            var id = parseInt($(this).data('id'), 10);
+            FTTH.chamar({
+                url: 'mapa.php?ajax=ficha&id=' + id,
+                onOk: function (c) {
+                    abrirModalEdicao(c);
+                    editando.virar = true;
+                    $('#modal-titulo').text('Transformar em ponto');
+                    corEscolhida = null;
+                    $('.ftth-cor').removeClass('ativo').first().addClass('ativo');
+                    $('#nc-saida').empty();
+                    sugerirNome('');
+                },
+                onErro: function (m) { FTTH.toast('erro', m); }
+            });
+        });
+        // Continuar é o MESMO cabo: sem popup de configuração — capacidade, cores e nome são
+        // os dele (o servidor também impõe isso, via continuar_de).
+        $(document).on('click', '#fp-continuar', function () {
+            var $b = $(this);
+            caboDesde = { tipo: 'CAIXA', id: parseInt($b.data('id'), 10), nome: 'ponta livre',
+                          lat: parseFloat($b.data('lat')), lng: parseFloat($b.data('lng')) };
+            continuando = { ponta: caboDesde.id, nome: String($b.data('nome')),
+                            tipo: String($b.data('tipo')), cor: String($b.data('cor')) || '#00E676' };
+            $('#painel').hide();
+            definirModo('cabo');
+        });
 
         $(document).on('click', '#q-importar', function () {
             decidirQuarentena(parseInt($(this).data('id'), 10), 'importar');
@@ -2890,7 +3474,7 @@
 
         /** O estado novo dos passos chegou: as travas acompanham. */
         atualizarPassos: function (p) {
-            travas = { pop: !!p.feitos.pop, ancoras: parseInt(p.ancoras, 10) || 0 };
+            travas = { pop: !!p.feitos.pop };
             aplicarTravas();
         },
 
@@ -2960,8 +3544,14 @@
         });
     }
 
-    function abrirModalEmenda(texto, rotuloSim, rotuloNao, aoSim, aoNao) {
+    /** `ancora` true: a pergunta é a da ponta livre (título e explicação próprios). */
+    function abrirModalEmenda(texto, rotuloSim, rotuloNao, aoSim, aoNao, ancora) {
         emendaAtiva = { aoSim: aoSim, aoNao: aoNao };
+        $('#em-titulo').html(ancora
+            ? '<i class="bi-link-45deg"></i> Ancorar o cabo?'
+            : '<i class="bi-scissors"></i> Emendar no cabo?');
+        $('#em-explica-ancora').toggle(!!ancora);
+        $('#em-explica-emenda').toggle(!ancora);
         $('#em-texto').html(texto);
         $('#em-sim').text(rotuloSim).prop('disabled', false);
         $('#em-nao').text(rotuloNao).prop('disabled', false);
@@ -3013,6 +3603,79 @@
                 function () { fecharModalEmenda(); if (aoTerminar) aoTerminar(); }
             );
         });
+    }
+
+    /*
+     * Modo Mover: ponta livre solta em cima de um ponto (ou um ponto solto em cima de uma
+     * ponta livre) pergunta se é para ancorar. "Em cima" é medido em PIXELS, pela sobreposição
+     * dos ícones: é o que o olho vê em qualquer zoom. Em metros, no zoom de rua, a ponta que
+     * parece estar sobre a CTO pode estar a 20 m dela — e foi assim que ela ficou solta sem
+     * ninguém avisar (30/09/2026).
+     */
+    var PX_ANCORAR = 24;
+
+    function distanciaEmPixels(a, b) {
+        var proj = mapa.getProjection();
+        if (!proj) return Infinity;
+        var escala = Math.pow(2, mapa.getZoom());
+        var pa = proj.fromLatLngToPoint(a), pb = proj.fromLatLngToPoint(b);
+        return Math.sqrt(Math.pow((pa.x - pb.x) * escala, 2) + Math.pow((pa.y - pb.y) * escala, 2));
+    }
+
+    function oferecerAncoragem(c, marcador) {
+        var arrastouPonta = c.tipo === 'PONTA';
+        if (!arrastouPonta && (c.tipo === 'RESERVA' || c.tipo === 'POSTE')) return;
+        var aqui = marcador.getPosition();
+        var alvo = null, menor = PX_ANCORAR;
+        marcadores.forEach(function (m) {
+            if (m === marcador) return;
+            var serve = arrastouPonta
+                ? (m.ftthTipo !== 'PONTA' && m.ftthTipo !== 'RESERVA' && m.ftthTipo !== 'POSTE')
+                : m.ftthTipo === 'PONTA';
+            if (!serve) return;
+            var d = distanciaEmPixels(aqui, m.getPosition());
+            if (d <= menor) { menor = d; alvo = m; }
+        });
+        if (!alvo) return;
+
+        var pontaId = arrastouPonta ? Number(c.id) : alvo.ftthCaixaId;
+        var caixaId = arrastouPonta ? alvo.ftthCaixaId : Number(c.id);
+        var nomeCaixa = arrastouPonta ? alvo.ftthNome : c.nome;
+        abrirModalEmenda(
+            (arrastouPonta
+                ? 'A ponta livre do cabo parou em cima de <b>' + esc(nomeCaixa) + '</b>.'
+                : '<b>' + esc(nomeCaixa) + '</b> parou em cima de uma ponta livre de cabo.')
+            + ' Quer ancorar o cabo em ' + esc(nomeCaixa) + '?',
+            'Ancorar', 'Deixar solta',
+            function () { ancorarPonta(pontaId, caixaId, nomeCaixa); },
+            fecharModalEmenda,
+            true
+        );
+    }
+
+    /**
+     * Ancorar é uma alteração do modo Mover como qualquer outra: fica pendente, conta no card,
+     * aparece desenhada (o cabo já vai até o ponto e a ponta some) e só vai para o banco no
+     * Concluir, na mesma transação do resto. O Cancelar desfaz.
+     */
+    function ancorarPonta(pontaId, caixaId, nomeCaixa) {
+        // O cabo que já sai deste ponto não pode ter a outra ponta ancorada nele: seria um laço.
+        var laco = ((ultimoDesenho && ultimoDesenho.vaos) || []).some(function (v) {
+            var ini = Number(v.caixa_ini_id), fim = Number(v.caixa_fim_id);
+            return (ini === pontaId && fim === caixaId) || (ini === caixaId && fim === pontaId);
+        });
+        if (laco) {
+            $('#em-saida').html('<div class="ftth-aviso ftth-aviso--erro">O cabo já sai de '
+                + esc(nomeCaixa) + ': ancorar a outra ponta ali fecharia um laço.</div>');
+            $('#em-sim').prop('disabled', true);
+            return;
+        }
+        fecharModalEmenda();
+        pendentes.ancoras[pontaId] = { caixa: caixaId, nome: nomeCaixa };
+        // O arrasto da ponta perde o sentido: quem manda na posição agora é o ponto.
+        delete pendentes.caixas[pontaId];
+        atualizarContaMover();
+        if (ultimoDesenho) desenhar(ultimoDesenho);
     }
 
     /** Quebra o vão de verdade. O servidor é quem decide se dá: aqui só mostramos o resultado. */

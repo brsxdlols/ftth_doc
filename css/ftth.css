@@ -908,3 +908,52 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
     .ftth-onb-no      { max-width: 64px; }
     .ftth-onb-balao   { top: 12px; }
 }
+
+/* ---------------------------------------------------------------- seleção e exclusão em lote
+   Passo 1 usa o card flutuante de sempre (#sel-card); passo 2 é a barra "Itens selecionados",
+   encaixada na BASE do mapa como no UpperX: o topo fica livre para ver o que foi pego. */
+.ftth-btn--perigo       { background: var(--ftth-vermelho); color: #fff; }
+.ftth-btn--perigo:hover { background: #A93226; }
+.ftth-lote-barra        { top: auto; bottom: 14px; }
+.ftth-lote-barra .ftth-flutuante-info strong { color: #FF8A80; }
+.ftth-lote-contas       { display: inline-flex; gap: 14px; font-size: 13px; }
+.ftth-lote-contas i     { color: #7FE3B0; margin-right: 2px; }
+.ftth-lote-contas b     { font-weight: 700; }
+
+.ftth-lote-lista        { list-style: none; margin: 0 0 10px; padding: 0; font-size: 12.5px; }
+.ftth-lote-lista li     { display: flex; justify-content: space-between; gap: 10px;
+                          padding: 5px 0; border-bottom: 1px solid var(--ftth-borda); }
+.ftth-lote-lista li:last-child { border-bottom: 0; }
+.ftth-lote-lista b      { color: var(--ftth-azul); white-space: nowrap; }
+.ftth-lote-lista .alerta b { color: var(--ftth-vermelho); }
+.ftth-lote-detalhe      { font-size: 12px; color: var(--ftth-cinza); margin: 0 0 10px; }
+.ftth-lote-detalhe ul   { margin: 4px 0 0 16px; padding: 0; max-height: 140px; overflow: auto; }
+
+@media (max-width: 470px) {
+    .ftth-mapa-barra .ftth-modos { flex-wrap: wrap; }
+    .ftth-lote-barra .ftth-btn   { flex: 1 1 calc(33.33% - 6px); }
+    #sel-card .ftth-flutuante-info { flex: 1 1 0; }
+    #sel-card .ftth-btn          { flex: 1 1 calc(33.33% - 6px); }
+}
+/* A seleção é magenta (js/mapa.js, COR_AREA): o título dos cards acompanha a cor do mapa. */
+#sel-card .ftth-flutuante-info strong { color: #FF6BE4; }
+#sel-card                             { border: 1px solid rgba(255, 43, 214, .5); }
+.ftth-lote-barra                      { border: 1px solid rgba(255, 43, 214, .5); }
+.ftth-lote-contas i                   { color: #FF6BE4; }
+
+/* Quarentena: a coluna Tipo é um select por linha, e o "Mudar tipo para" do lote usa o mesmo.
+   Compacto para a linha da tabela não crescer. */
+.ftth-imp-tipo            { padding: 3px 6px; font-size: 12px; max-width: 150px; }
+.ftth-imp-lote .ftth-imp-tipo { padding: 5px 8px; font-size: 12.5px; }
+/* Cor na quarentena: a borda esquerda do select é a amostra da cor atual. */
+.ftth-imp-cor             { border-left: 10px solid var(--ftth-borda); }
+.ftth-imp-bolinha         { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+                            vertical-align: -1px; border: 1px solid rgba(0,0,0,.15); }
+
+/* Selo da aba Pontos: mesma forma do número das Camadas, em âmbar (a cor do "filtro ligado"
+   da bolinha na aba lateral), para dizer de longe que a lista e o mapa estão filtrados. */
+.ftth-gaveta-tab b.ftth-gaveta-filtro { background: var(--ftth-amarelo); color: #1B2A40; }
+/* O selo fica SEMPRE embaixo do nome da aba, centralizado — em Camadas ele só descia porque
+   o texto quebrava; em Pontos, mais curto, ficava ao lado. Agora as duas iguais. */
+.ftth-gaveta-tab span   { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ftth-gaveta-tab span b { margin-left: 0; }

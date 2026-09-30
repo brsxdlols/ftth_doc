@@ -4,7 +4,7 @@ Addon para MK-AUTH que documenta a planta FTTH: caixas e cabos no mapa, importa�
 projeto, diagrama de emendas de cada CEO/CTO, POP com OLT e DIO, e cálculo de potência do sinal
 que chega em cada cliente.
 
-> **Versão 0.9.5 — beta.** Está rodando em produção no provedor que o desenvolve, mas é a
+> **Versão 0.9.6 — beta.** Está rodando em produção no provedor que o desenvolve, mas é a
 > primeira versão publicada. Instale primeiro num servidor de teste.
 
 ## Instalação
@@ -46,11 +46,34 @@ wget -O - https://raw.githubusercontent.com/marcelosilvestro/ftth_doc/main/insta
 wget -O - .../instalar.sh | bash -s -- --diagnostico
 
 # instalar uma versão específica
-wget -O - .../instalar.sh | bash -s -- --versao=v0.9.5
+wget -O - .../instalar.sh | bash -s -- --versao=v0.9.6
 
 # remover as tabelas que o addon aposentou
 wget -O - .../instalar.sh | bash -s -- --limpar
+
+# instalar a partir de um pacote local (sem GitHub), gerado pelo empacotar.sh
+bash instalar.sh --pacote=/root/ftth_doc-0.9.6.tar.gz
 ```
+
+## Ponta livre, seleção por área e postes (0.9.6)
+
+- **Cabo sem caixa na ponta.** O cabo pode começar ou terminar no vazio: ali nasce uma *ponta
+  livre* (bolinha branca na cor do cabo). Para ancorar, solte um ponto em cima dela, arraste-a
+  até uma caixa no modo **Mover** (o addon pergunta *Ancorar?*) ou use **Virar ponto** na
+  ficha dela. **Continuar cabo** segue desenhando o mesmo cabo, com a mesma capacidade e cor —
+  trocar de capacidade exige uma CEO.
+- **Selecionar.** Desenhe uma área no mapa e exclua ou pinte de uma vez tudo o que ficou dentro:
+  pontos, cabos (o que liga um ponto de dentro a um de fora sai inteiro até ele) e as fusões
+  que usavam essas fibras. Cliente ligado aparece na prévia antes de confirmar. DC/POP nunca
+  entra no lote.
+- **Postes.** Tipo próprio, com ícone. O cabo **passa** pelo poste: clicado no traçado, ele vira
+  um vértice, não uma emenda. Filtro *Postes* na aba Pontos e camada própria.
+- **Importação.** Na quarentena, **Tipo** e **Cor** mudam por linha ou em lote, e o envio aceita
+  *Tipo dos pontos* e *Cor dos pontos* para arquivos que não dizem o que são (o de postes da
+  concessionária, por exemplo). Importados e descartados podem voltar para pendentes.
+- **Nome livre de novo.** O nome de um ponto excluído pode ser usado outra vez, e a sugestão de
+  nome preenche o primeiro número livre da série.
+- **Camadas** ficam gravadas por usuário: o que você desliga continua desligado no próximo acesso.
 
 ## Emendar uma caixa num cabo já lançado
 

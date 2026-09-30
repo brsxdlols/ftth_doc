@@ -16,6 +16,7 @@ require_once __DIR__ . '/Db.php';
 require_once __DIR__ . '/Geo.php';
 require_once __DIR__ . '/Resultado.php';
 require_once __DIR__ . '/Auditoria.php';
+require_once __DIR__ . '/Caixa.php';
 
 final class Kmz
 {
@@ -46,9 +47,13 @@ final class Kmz
 
     /**
      * Le o arquivo e devolve os itens SEM gravar nada.
+     *
+     * @param string|null $tipoForcado tipo escolhido no envio ("Tipo dos pontos"): vale para
+     *                                 TODOS os pontos do arquivo, sem adivinhar pela descrição
+     * @param string|null $corForcada  "Cor dos pontos" do envio: a mesma cor para todos os pontos
      * @return array{itens:array,resumo:array}
      */
-    public static function ler(string $caminho): array
+    public static function ler(string $caminho, ?string $tipoForcado = null, ?string $corForcada = null): array
     {
         $kml = self::extrairKml($caminho);
         if ($kml === null) {
@@ -64,6 +69,8 @@ final class Kmz
 
         $itens  = [];
         $resumo = ['pontos' => 0, 'linhas' => 0, 'ignorados' => 0, 'metros' => 0.0, 'tipos' => []];
+        $doc = $xml->xpath('//*[local-name()="Document"]/*[local-name()="name"]');
+        $documento = $doc ? (string) $doc[0] : '';
 
         foreach ($xml->xpath('//*[local-name()="Placemark"]') ?: [] as $pm) {
             $nome = trim((string) $pm->name);
@@ -77,14 +84,24 @@ final class Kmz
             if ($ponto) {
                 $coords = self::coordenadas((string) $ponto[0]);
                 if (count($coords) !== 1) { $resumo['ignorados']++; continue; }
-                $tipo = self::tipoDaDescricao($desc, $nome);
+                // Nome que é só a coordenada ("-24.886502,-52.202839", como o Google Earth
+                // exporta) não identifica nada: conta como sem nome e ganha um na importação.
+                if (preg_match('/^\s*-?\d{1,3}(\.\d+)?\s*[,;]\s*-?\d{1,3}(\.\d+)?\s*$/', $nome)) {
+                    $nome = '';
+                }
+                // A pasta e o documento também dizem o tipo: exportações agrupam os postes numa
+                // pasta "Postes", ou o arquivo inteiro é de postes, sem descrição nos pontos.
+                $pasta = $pm->xpath('ancestor::*[local-name()="Folder"][1]/*[local-name()="name"]');
+                $tipo = $tipoForcado ?? self::tipoDaDescricao($desc, $nome,
+                    [$pasta ? (string) $pasta[0] : '', $documento]);
                 $itens[] = [
                     'tipo_sugerido' => 'CAIXA',
                     'subtipo'       => $tipo,
                     'nome'          => $nome !== '' ? $nome : null,
-                    'cor'           => $cor ?? '#00C853',
+                    'cor'           => $corForcada ?? $cor ?? ($tipo === 'POSTE' ? '#FF9100' : '#00C853'),
                     'geometria'     => $coords,
-                    'alertas'       => $nome === ''
+                    // Poste sem nome é o normal (são centenas): ganha nome na importação.
+                    'alertas'       => $nome === '' && $tipo !== 'POSTE'
                         ? [['code' => 'FTTH-KMZ-001', 'message' => 'Item sem nome no arquivo.']]
                         : [],
                 ];
@@ -129,7 +146,9 @@ final class Kmz
         string $nomeArquivo,
         int $regiaoId,
         string $usuario,
-        bool $ignorarDuplicado = false
+        bool $ignorarDuplicado = false,
+        ?string $tipoPontos = null,
+        ?string $corPontos = null
     ): array {
         $hashArquivo = hash_file('sha256', $caminho);
 
@@ -141,7 +160,10 @@ final class Kmz
             throw new RuntimeException('FTTH-KMZ-002:' . json_encode($jaImportado));
         }
 
-        $lido = self::ler($caminho);
+        // "Tipo dos pontos" do envio: só vale um tipo que o cadastro de ponto oferece.
+        $tipoPontos = $tipoPontos !== null && isset(Caixa::ROTULOS[$tipoPontos]) ? $tipoPontos : null;
+        $corPontos = $corPontos !== null && preg_match('/^#[0-9A-Fa-f]{6}$/', $corPontos) ? strtoupper($corPontos) : null;
+        $lido = self::ler($caminho, $tipoPontos, $corPontos);
 
         return Db::transacao(function () use ($lido, $hashArquivo, $nomeArquivo, $caminho, $regiaoId, $usuario) {
             Db::exec(
@@ -184,7 +206,7 @@ final class Kmz
 
                     if ($ancoraIni === null || $ancoraFim === null) {
                         $itemAlertas[] = ['code' => 'FTTH-GEO-005',
-                            'message' => 'Ponta sem caixa próxima para ancorar.'];
+                            'message' => 'Ponta sem caixa próxima: entra como ponta livre do cabo.'];
                     } elseif ($ancoraIni['ref'] === $ancoraFim['ref']) {
                         $itemAlertas[] = ['code' => 'FTTH-GEO-003',
                             'message' => 'As duas pontas caem na mesma caixa.'];
@@ -207,8 +229,9 @@ final class Kmz
                 );
                 $itemId = Db::ultimoId();
 
-                // Reserva não é âncora de cabo: ela mora no meio de um vão, nunca na ponta.
-                if ($item['tipo_sugerido'] === 'CAIXA' && ($item['subtipo'] ?? '') !== 'RESERVA') {
+                // Reserva e poste não são âncora de cabo: a reserva mora no meio de um vão, e o
+                // cabo passa pelo poste. Um poste ao lado da CTO roubaria a ponta do cabo dela.
+                if ($item['tipo_sugerido'] === 'CAIXA' && !in_array($item['subtipo'] ?? '', ['RESERVA', 'POSTE'], true)) {
                     $caixasDoArquivo[] = [
                         'lat' => (float) $item['geometria'][0][0],
                         'lng' => (float) $item['geometria'][0][1],
@@ -258,7 +281,7 @@ final class Kmz
         $grau = $tolerancia / 111320.0 * 1.5;
         $cands = Db::todos(
             'SELECT id, nome, lat, lng FROM tab_ftth_caixa
-             WHERE regiao_id = ? AND excluido_em IS NULL AND tipo <> "RESERVA"
+             WHERE regiao_id = ? AND excluido_em IS NULL AND tipo NOT IN ("RESERVA", "POSTE", "PONTA")
                AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?',
             [$regiaoId, $lat - $grau, $lat + $grau, $lng - $grau, $lng + $grau]
         );
@@ -332,7 +355,8 @@ final class Kmz
         return $saida;
     }
 
-    private static function tipoDaDescricao(string $desc, string $nome): string
+    /** @param string[] $contexto nomes da pasta e do documento, nesta ordem: a pasta é mais específica */
+    private static function tipoDaDescricao(string $desc, string $nome, array $contexto = []): string
     {
         $t = mb_strtolower($desc . ' ' . $nome);
         $t = str_replace(['tipo:', 'tipo :'], '', $t);
@@ -345,6 +369,22 @@ final class Kmz
         if (preg_match('/^(cto|ceo|dc|pop)\b/i', trim($nome), $m)) {
             $p = strtoupper($m[1]);
             return $p === 'POP' ? 'DC' : $p;
+        }
+        if (preg_match('/^(poste|pt)[\s.\-_]*\d/i', trim($nome))) {
+            return 'POSTE';
+        }
+        // Por último, a pasta e o documento do KMZ ("Postes", "postes (669) sem projeto"...):
+        // o arquivo de postes da concessionária não diz nada em cada ponto, só no nome dele.
+        foreach ($contexto as $texto) {
+            $p = mb_strtolower((string) $texto);
+            if ($p === '') {
+                continue;
+            }
+            foreach (self::TIPOS as $chave => $tipo) {
+                if (str_contains($p, $chave)) {
+                    return $tipo;
+                }
+            }
         }
         return 'CTO';
     }

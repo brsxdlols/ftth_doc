@@ -132,13 +132,17 @@ T::recusa('I4: recusa usar a porta do DIO em outra ligacao',
 // ---------------------------------------------------------------- nome unico por regiao
 T::recusa('recusa duas caixas com o mesmo nome na regiao',
     fn() => $criarCaixa('CTO', 'CTO.02.05', -24.90, -52.21),
-    'uq_caixa_nome');
+    'uq_caixa_nome_ativo');
 
-// Nome nao volta a ser usado nem depois de excluido logicamente (decisao 3b.20 #2).
+// 0.9.6: o nome de caixa excluida volta a ficar livre — a unicidade e so entre as ATIVAS
+// (coluna gerada nome_ativo, NULL nas excluidas). Antes era a decisao 3b.20 #2, revogada.
 Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NOW() WHERE id = ?', [$cto]);
-T::recusa('nome de caixa excluida NAO e reaproveitado',
-    fn() => $criarCaixa('CTO', 'CTO.02.05', -24.90, -52.21),
-    'uq_caixa_nome');
+$reuso = $criarCaixa('CTO', 'CTO.02.05', -24.90, -52.21);
+T::certo('nome de caixa excluida pode ser reaproveitado', $reuso > 0);
+T::recusa('mas reativar a antiga com o nome em uso e recusado',
+    fn() => Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NULL WHERE id = ?', [$cto]),
+    'uq_caixa_nome_ativo');
+Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NOW() WHERE id = ?', [$reuso]);
 Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NULL WHERE id = ?', [$cto]);
 
 // ---------------------------------------------------------------- desconectar libera a ponta

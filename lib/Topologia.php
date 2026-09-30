@@ -39,10 +39,15 @@ final class Topologia
      */
     public static function criarSplitter(int $caixaId, array $d, string $usuario): Resultado
     {
-        $caixa = Db::um('SELECT id, regiao_id, nome FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL',
+        $caixa = Db::um('SELECT id, regiao_id, nome, tipo FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL',
             [$caixaId]);
         if (!$caixa) {
             return Resultado::erro('FTTH-TOP-001', ['caixa' => $caixaId]);
+        }
+        if ($caixa['tipo'] === 'PONTA' || $caixa['tipo'] === 'POSTE') {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId],
+                $caixa['tipo'] === 'PONTA' ? 'Ponta livre não recebe splitter: transforme-a num ponto antes.'
+                                          : 'Poste não recebe splitter: o splitter fica numa caixa.');
         }
 
         $funcao = strtoupper(trim((string) ($d['funcao'] ?? '')));
@@ -481,6 +486,14 @@ final class Topologia
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'ponta'], 'Ponta inválida na requisição.');
         }
 
+        // 0. ponta livre e poste não têm caixa de emenda: não há onde fundir (0.9.6).
+        $tipoCaixa = (string) Db::valor('SELECT tipo FROM tab_ftth_caixa WHERE id = ?', [$caixaId]);
+        if ($tipoCaixa === 'PONTA' || $tipoCaixa === 'POSTE') {
+            return Resultado::erro('FTTH-TOP-017', ['caixa' => $caixaId],
+                $tipoCaixa === 'PONTA' ? 'Ponta livre não recebe fusão: transforme-a num ponto antes.'
+                                      : 'Poste não recebe fusão: a emenda fica numa CEO.');
+        }
+
         // 1. o par existe na matriz, e os dois elementos cabem neste tipo de caixa?
         if (!self::parPermitido($a['elemento'], $b['elemento'])) {
             return Resultado::erro('FTTH-TOP-017',
@@ -696,7 +709,7 @@ final class Topologia
      * Roda em simulação quando `$aplicar` é false — e a tela sempre mostra antes.
      */
     public static function ligarCabos(int $caixaId, int $vaoA, int $vaoB, bool $aplicar,
-                                      string $usuario): Resultado
+                                      string $usuario, bool $comFusao = false): Resultado
     {
         if ($vaoA === $vaoB) {
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'cabo'],
@@ -747,7 +760,9 @@ final class Topologia
 
             $pa = ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vaoA, 'numero' => $n];
             $pb = ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vaoB, 'numero' => $n];
-            $tipo = self::ehPassagem($pa, $pb) ? 'PASSAGEM' : 'FUSAO';
+            // "Interligar com fusão" (30/09/2026): o técnico cortou e fundiu de verdade, então
+            // nem o par de mesma bitola e mesmo número vira passagem sem perda.
+            $tipo = !$comFusao && self::ehPassagem($pa, $pb) ? 'PASSAGEM' : 'FUSAO';
 
             if (!$aplicar) {
                 $pares[] = ['numero' => $n, 'estado' => 'ligar', 'tipo' => $tipo];
@@ -755,7 +770,7 @@ final class Topologia
                 continue;
             }
 
-            $r = self::conectar($caixaId, $pa, $pb, null, $usuario);
+            $r = self::conectar($caixaId, $pa, $pb, $comFusao ? 'FUSAO' : null, $usuario);
             if ($r->ok) {
                 $pares[] = ['numero' => $n, 'estado' => 'ligada', 'tipo' => $tipo,
                             'ligacao_id' => (int) $r->data['id']];

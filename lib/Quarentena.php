@@ -14,6 +14,8 @@ require_once __DIR__ . '/Geo.php';
 require_once __DIR__ . '/Config.php';
 require_once __DIR__ . '/Auditoria.php';
 require_once __DIR__ . '/Resultado.php';
+require_once __DIR__ . '/Caixa.php';
+require_once __DIR__ . '/Cabo.php';
 
 final class Quarentena
 {
@@ -126,18 +128,182 @@ final class Quarentena
         });
     }
 
+    /**
+     * Desfaz a decisão tomada sobre itens: importado volta para pendente ou descartado, e
+     * descartado volta para pendente (30/09/2026).
+     *
+     * Reverter um IMPORTADO apaga o que a importação criou, pelos serviços de sempre
+     * (Cabo::excluir, Caixa::excluir) — com as travas deles: ponto que já recebeu cabo ou
+     * fusão, cabo com fibra ligada ou que já foi emendado/continuado no mapa ficam de fora,
+     * com o motivo. Ligar a rede de novo é trabalho do usuário, não é algo a desfazer calado.
+     * Cabos saem antes dos pontos: é o cabo que prende a caixa.
+     *
+     * @param string $destino 'pendente' | 'descartado'
+     */
+    public static function reverter(array $ids, string $destino, string $usuario): Resultado
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+        if (!$ids) {
+            return Resultado::erro('FTTH-SYS-002', [], 'Nenhum item selecionado.');
+        }
+        if (!in_array($destino, ['pendente', 'descartado'], true)) {
+            return Resultado::erro('FTTH-SYS-002', ['destino' => $destino]);
+        }
+
+        return Db::transacao(function () use ($ids, $destino, $usuario) {
+            $marcas = implode(',', array_fill(0, count($ids), '?'));
+            $itens = Db::todos(
+                "SELECT * FROM tab_ftth_importacao_item
+                  WHERE id IN ($marcas) AND status IN ('importado', 'descartado')
+                  ORDER BY FIELD(gerado_tipo, 'VAO', 'CAIXA'), id", $ids);
+
+            $revertidos = 0;
+            $pulados = [];
+            foreach ($itens as $i) {
+                if ($i['status'] === $destino) {
+                    continue;                 // descartado → descartado: nada a fazer
+                }
+                if ($i['status'] === 'importado') {
+                    $motivo = self::desfazerGerado($i, $usuario);
+                    if ($motivo !== null) {
+                        $pulados[] = ['id' => (int) $i['id'], 'nome' => $i['nome'], 'motivo' => $motivo];
+                        continue;
+                    }
+                }
+                Db::exec('UPDATE tab_ftth_importacao_item
+                             SET status = ?, gerado_tipo = NULL, gerado_id = NULL,
+                                 decidido_por = ?, decidido_em = NOW()
+                           WHERE id = ?', [$destino, $usuario, (int) $i['id']]);
+                $revertidos++;
+            }
+            if ($revertidos > 0) {
+                Auditoria::registrar('importacao_item', $ids[0], 'reverter', null,
+                    ['destino' => $destino, 'quantidade' => $revertidos]);
+                self::recontar($ids);
+            }
+            return Resultado::ok(['revertidos' => $revertidos, 'pulados' => $pulados]);
+        });
+    }
+
+    /** Apaga o que a importação do item criou. Devolve o motivo da recusa, ou null se saiu. */
+    private static function desfazerGerado(array $item, string $usuario): ?string
+    {
+        $id = (int) $item['gerado_id'];
+        if ($item['gerado_tipo'] === 'VAO') {
+            $vao = Db::um('SELECT id, cabo_id FROM tab_ftth_cabo_vao WHERE id = ? AND excluido_em IS NULL', [$id]);
+            if (!$vao) {
+                return null;                  // já foi apagado no mapa: só volta o status
+            }
+            $vaosDoCabo = (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_cabo_vao
+                                            WHERE cabo_id = ? AND excluido_em IS NULL', [(int) $vao['cabo_id']]);
+            if ($vaosDoCabo > 1) {
+                return 'o cabo já foi emendado ou continuado no mapa';
+            }
+            $r = Cabo::excluir((int) $vao['cabo_id'], $usuario);
+            return $r->ok ? null : (string) $r->primeiraMensagem();
+        }
+        if ($item['gerado_tipo'] === 'CAIXA') {
+            if (!Db::valor('SELECT id FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL', [$id])) {
+                return null;
+            }
+            $r = Caixa::excluir($id, null, $usuario);
+            return $r->ok ? null : (string) $r->primeiraMensagem();
+        }
+        return null;
+    }
+
+    /**
+     * Troca o tipo de itens PENDENTES: um por vez (o select da linha) ou em lote ("Mudar tipo
+     * para"). Ponto recebe um tipo do cadastro de ponto (Caixa::ROTULOS); cabo, um rótulo de
+     * capacidade do catálogo. Item da outra espécie na seleção é pulado, não é erro: "mudar
+     * para Poste" com cabos marcados junto muda só os pontos.
+     *
+     * O alerta de "sem nome" acompanha: poste sem nome é o normal (ganha POSTE.NN ao importar);
+     * os outros tipos continuam pedindo revisão.
+     */
+    public static function alterarTipo(array $ids, string $subtipo, string $usuario): Resultado
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+        if (!$ids) {
+            return Resultado::erro('FTTH-SYS-002', [], 'Nenhum item selecionado.');
+        }
+        $ehPonto = isset(Caixa::ROTULOS[$subtipo]);
+        if (!$ehPonto && !Db::valor('SELECT id FROM tab_ftth_cabo_tipo WHERE rotulo = ? AND ativo = 1', [$subtipo])) {
+            return Resultado::erro('FTTH-SYS-002', ['subtipo' => $subtipo], 'Tipo inválido.');
+        }
+
+        return Db::transacao(function () use ($ids, $subtipo, $usuario, $ehPonto) {
+            $marcas = implode(',', array_fill(0, count($ids), '?'));
+            $n = 0;
+            foreach (Db::todos(
+                "SELECT id, nome, alertas_json FROM tab_ftth_importacao_item
+                  WHERE id IN ($marcas) AND status = 'pendente' AND tipo_sugerido = ?",
+                array_merge($ids, [$ehPonto ? 'CAIXA' : 'VAO'])) as $i) {
+                $alertas = json_decode((string) $i['alertas_json'], true) ?: [];
+                if ($ehPonto) {
+                    $alertas = array_values(array_filter($alertas, static function ($a) {
+                        return ($a['code'] ?? '') !== 'FTTH-KMZ-001';
+                    }));
+                    if (trim((string) $i['nome']) === '' && $subtipo !== 'POSTE') {
+                        $alertas[] = ['code' => 'FTTH-KMZ-001', 'message' => 'Item sem nome no arquivo.'];
+                    }
+                }
+                Db::exec('UPDATE tab_ftth_importacao_item SET subtipo = ?, alertas_json = ? WHERE id = ?',
+                    [$subtipo, $alertas ? json_encode($alertas, JSON_UNESCAPED_UNICODE) : null, (int) $i['id']]);
+                $n++;
+            }
+            if ($n > 0) {
+                Auditoria::registrar('importacao_item', $ids[0], 'alterar_tipo', null,
+                    ['subtipo' => $subtipo, 'quantidade' => $n]);
+                self::recontar($ids);
+            }
+            return Resultado::ok(['alterados' => $n, 'pulados' => count($ids) - $n]);
+        });
+    }
+
+    /**
+     * Troca a cor de itens PENDENTES — a do ponto, ou a da rota no caso de cabo. Um por vez
+     * (select da linha) ou em lote: importar 2 mil postes e depois pintar um a um no mapa não
+     * é opção (30/09/2026).
+     */
+    public static function alterarCor(array $ids, string $cor, string $usuario): Resultado
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+        if (!$ids) {
+            return Resultado::erro('FTTH-SYS-002', [], 'Nenhum item selecionado.');
+        }
+        if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $cor)) {
+            return Resultado::erro('FTTH-SYS-002', ['cor' => $cor], 'Cor inválida.');
+        }
+        return Db::transacao(function () use ($ids, $cor, $usuario) {
+            $marcas = implode(',', array_fill(0, count($ids), '?'));
+            $n = Db::exec("UPDATE tab_ftth_importacao_item SET cor = ?
+                            WHERE id IN ($marcas) AND status = 'pendente'",
+                          array_merge([strtoupper($cor)], $ids));
+            if ($n > 0) {
+                Auditoria::registrar('importacao_item', $ids[0], 'alterar_cor', null,
+                    ['cor' => strtoupper($cor), 'quantidade' => $n]);
+            }
+            return Resultado::ok(['alterados' => $n]);
+        });
+    }
+
     // ------------------------------------------------------------------ interno
 
     private static function criarCaixa(array $item, array $geo, string $usuario, array $ajustes): Resultado
     {
         $nome = trim((string) ($ajustes['nome'] ?? $item['nome'] ?? ''));
+        $tipo = (string) ($ajustes['tipo'] ?? $item['subtipo'] ?? 'CTO');
+        // Ponto sem nome (ou com a coordenada no lugar do nome) ganha o próximo da série do
+        // tipo: POSTE.NN é o normal num KMZ de postes; nos outros tipos o alerta já avisou.
+        if ($nome === '') {
+            $nome = (string) Caixa::sugerirNome((int) $item['regiao_id'], $tipo);
+        }
         if ($nome === '') {
             return Resultado::erro('FTTH-SYS-002', ['item' => $item['id']], 'A caixa precisa de um nome.');
         }
-        $tipo = (string) ($ajustes['tipo'] ?? $item['subtipo'] ?? 'CTO');
 
-        $jaExiste = Db::valor('SELECT id FROM tab_ftth_caixa WHERE regiao_id = ? AND nome = ?',
-            [$item['regiao_id'], $nome]);
+        $jaExiste = Caixa::nomeOcupado((int) $item['regiao_id'], $nome);
         if ($jaExiste) {
             return Resultado::erro('FTTH-KMZ-003', ['nome' => $nome, 'caixa_id' => (int) $jaExiste],
                 'Já existe uma caixa com esse nome na região.');
@@ -165,6 +331,28 @@ final class Quarentena
         // Resolve as ancoras: caixa real direta, ou o item de quarentena ja importado.
         $ini = self::resolverAncora($item['ancora_ini_id'], $item['ancora_ini_item_id']);
         $fim = self::resolverAncora($item['ancora_fim_id'], $item['ancora_fim_item_id']);
+
+        // Ponta sem caixa nenhuma por perto no arquivo: vira ponta livre (0.9.6), em vez de
+        // travar o vão. Âncora que existe mas ainda não foi importada continua esperando.
+        $ultimo = count($geo) - 1;
+        // Âncora que virou poste ou reserva (o usuário trocou o tipo na quarentena) não segura
+        // ponta de cabo: o cabo passa pelo poste. A ponta fica livre ali.
+        if (self::ancoraNaoSegura($item['ancora_ini_id'], $item['ancora_ini_item_id'])) {
+            $item['ancora_ini_id'] = $item['ancora_ini_item_id'] = null;
+            $ini = null;
+        }
+        if (self::ancoraNaoSegura($item['ancora_fim_id'], $item['ancora_fim_item_id'])) {
+            $item['ancora_fim_id'] = $item['ancora_fim_item_id'] = null;
+            $fim = null;
+        }
+        if ($ini === null && !$item['ancora_ini_id'] && !$item['ancora_ini_item_id']) {
+            $ini = Caixa::criarPonta((int) $item['regiao_id'], (float) $geo[0][0], (float) $geo[0][1],
+                                     (string) ($item['cor'] ?? ''), $usuario);
+        }
+        if ($fim === null && !$item['ancora_fim_id'] && !$item['ancora_fim_item_id']) {
+            $fim = Caixa::criarPonta((int) $item['regiao_id'], (float) $geo[$ultimo][0], (float) $geo[$ultimo][1],
+                                     (string) ($item['cor'] ?? ''), $usuario);
+        }
 
         if ($ini === null || $fim === null) {
             return Resultado::erro('FTTH-KMZ-004', [
@@ -260,6 +448,21 @@ final class Quarentena
     }
 
     /** Caixa real informada, ou a caixa que nasceu do item de quarentena indicado. */
+    /** A âncora é (ou vai ser) um poste ou uma reserva — que não seguram ponta de cabo? */
+    private static function ancoraNaoSegura($caixaId, $itemId): bool
+    {
+        $naoSeguram = ['POSTE', 'RESERVA', 'PONTA'];
+        if ($caixaId) {
+            return in_array((string) Db::valor('SELECT tipo FROM tab_ftth_caixa WHERE id = ?', [$caixaId]),
+                            $naoSeguram, true);
+        }
+        if ($itemId) {
+            return in_array((string) Db::valor('SELECT subtipo FROM tab_ftth_importacao_item WHERE id = ?', [$itemId]),
+                            $naoSeguram, true);
+        }
+        return false;
+    }
+
     private static function resolverAncora($caixaId, $itemId): ?int
     {
         if ($caixaId) {

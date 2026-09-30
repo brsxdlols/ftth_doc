@@ -480,3 +480,10 @@ body.ftth-mapa-full .ftth-wrap--mapa.ftth-diagrama { padding: 4px 6px 6px; }
 .ftth-diagrama .ftth-aviso--erro { border-left-color: #C0392B; }
 .ftth-diagrama .ftth-aviso--ok   { border-left-color: var(--dg-atend); }
 .ftth-diagrama .ftth-dg-drawer-corpo .ftth-campo { width: 100%; }
+
+/* "Interligar com fusão", abaixo dos dois cabos da aba Interligar. */
+.ftth-diagrama .ftth-dg-check {
+    display: flex; align-items: center; gap: 7px; margin: 10px 0 0;
+    font-size: 12.5px; color: var(--dg-texto); cursor: pointer; user-select: none;
+}
+.ftth-diagrama .ftth-dg-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--dg-sel); cursor: pointer; }

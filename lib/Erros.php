@@ -54,6 +54,11 @@ final class Erros
         // Validador
         'FTTH-VAL-001' => 'Falha de validação da rede.',
 
+        // Seleção e exclusão em lote
+        'FTTH-LOTE-001' => 'A seleção não tem nenhum ponto que possa ser excluído.',
+        'FTTH-LOTE-002' => 'Há clientes ligados nos pontos selecionados: confirme digitando EXCLUIR.',
+        'FTTH-LOTE-003' => 'Desenhe uma área com ao menos três pontos.',
+
         // Sessao
         'FTTH-AUTH-001' => 'Sessão expirada.',
         'FTTH-AUTH-003' => 'Requisição inválida (token de segurança).',

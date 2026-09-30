@@ -178,7 +178,7 @@ final class Mapa
 
         foreach (Db::todos(
             'SELECT id, nome, tipo, lat, lng FROM tab_ftth_caixa
-              WHERE regiao_id = ? AND excluido_em IS NULL AND nome LIKE ?
+              WHERE regiao_id = ? AND excluido_em IS NULL AND tipo <> "PONTA" AND nome LIKE ?
               ORDER BY nome LIMIT ' . $limite, [$regiaoId, $like]) as $c) {
             $saida[] = ['grupo' => 'Caixas', 'rotulo' => $c['nome'], 'detalhe' => $c['tipo'],
                         'tipo' => 'caixa', 'id' => (int) $c['id'],
@@ -222,12 +222,14 @@ final class Mapa
      * nela; os vãos depois, e o `moverVertices` refaz as pontas com a coordenada nova.
      *
      * @param array $caixas [{id, lat, lng, versao?}, ...]
-     * @param array $vaos   [{id, vertices: [[lat,lng],...], versao?}, ...]
+     * @param array $vaos    [{id, vertices: [[lat,lng],...], versao?}, ...]
+     * @param array $ancoras [{ponta, caixa}, ...] pontas livres que o usuário ancorou (Ancorar)
      */
-    public static function aplicarMovimentos(array $caixas, array $vaos, string $usuario): Resultado
+    public static function aplicarMovimentos(array $caixas, array $vaos, string $usuario,
+                                             array $ancoras = []): Resultado
     {
-        if (!$caixas && !$vaos) {
-            return Resultado::ok(['caixas' => 0, 'vaos' => 0]);
+        if (!$caixas && !$vaos && !$ancoras) {
+            return Resultado::ok(['caixas' => 0, 'vaos' => 0, 'ancoras' => 0]);
         }
 
         // Db::transacao só desfaz quando a closure LANÇA: devolver um Resultado com erro
@@ -236,7 +238,7 @@ final class Mapa
         $falha = null;
 
         try {
-            return Db::transacao(function () use ($caixas, $vaos, $usuario, &$falha) {
+            return Db::transacao(function () use ($caixas, $vaos, $usuario, $ancoras, &$falha) {
                 foreach ($caixas as $c) {
                     $r = Caixa::mover(
                         (int) ($c['id'] ?? 0), (float) ($c['lat'] ?? 0), (float) ($c['lng'] ?? 0),
@@ -256,7 +258,17 @@ final class Mapa
                     }
                 }
                 self::ajustarReservas($caixas, $vaos, $usuario);
-                return Resultado::ok(['caixas' => count($caixas), 'vaos' => count($vaos)]);
+                // Ancorar vem por último: a ponta do cabo vai para onde o ponto PAROU. Só ancora
+                // o que o usuário confirmou na tela — nada é ancorado por proximidade (30/09/2026).
+                foreach ($ancoras as $a) {
+                    $r = Caixa::ancorarPonta((int) ($a['ponta'] ?? 0), (int) ($a['caixa'] ?? 0), $usuario);
+                    if (!$r->ok) {
+                        $falha = $r;
+                        throw new RuntimeException('ancoragem recusada');
+                    }
+                }
+                return Resultado::ok(['caixas' => count($caixas), 'vaos' => count($vaos),
+                                      'ancoras' => count($ancoras)]);
             });
         } catch (Throwable $e) {
             if ($falha !== null) {
@@ -314,7 +326,7 @@ final class Mapa
                        JOIN tab_ftth_splitter s2 ON s2.id = p.splitter_id
                       WHERE s2.caixa_id = c.id AND s2.excluido_em IS NULL) AS ocupadas
                FROM tab_ftth_caixa c
-              WHERE c.regiao_id = ? AND c.excluido_em IS NULL
+              WHERE c.regiao_id = ? AND c.excluido_em IS NULL AND c.tipo <> 'PONTA'
               ORDER BY c.nome", [$regiaoId]);
 
         $comSinal = Potencia::caixasComSinal();
@@ -349,7 +361,8 @@ final class Mapa
 
         $c['cabos'] = Db::todos(
             'SELECT v.id, v.comprimento_geo, v.comprimento_optico,
-                    t.rotulo AS tipo, cb.nome AS cabo,
+                    t.rotulo AS tipo, cb.nome AS cabo, cb.id AS cabo_id, cb.cabo_tipo_id,
+                    cb.padrao_cores, cb.cor_rota,
                     IF(v.caixa_ini_id = ?, cf.nome, ci.nome) AS sentido
                FROM tab_ftth_cabo_vao v
                JOIN tab_ftth_cabo cb ON cb.id = v.cabo_id

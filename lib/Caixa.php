@@ -3,7 +3,7 @@
  * ftth_doc :: caixas (CTO, CEO, DC, poste, prédio, cliente, reserva, problema…).
  *
  * Toda criação/alteração passa por aqui — nem o mapa nem a importação escrevem direto
- * na tabela (3b.0). Regras: nome único por região (inclusive entre excluídas), coordenada
+ * na tabela (3b.0). Regras: nome único por região entre as ativas, coordenada
  * válida, tipo conhecido, lock otimista e auditoria.
  */
 require_once __DIR__ . '/Db.php';
@@ -17,7 +17,7 @@ require_once __DIR__ . '/Reserva.php';
 final class Caixa
 {
     public const TIPOS = ['DC', 'PREDIO', 'POSTE', 'CEO', 'CTO', 'CTO_AP',
-                          'CLIENTE', 'RESERVA', 'PROBLEMA', 'FALHA'];
+                          'CLIENTE', 'RESERVA', 'PROBLEMA', 'FALHA', 'PONTA'];
 
     /**
      * O que o seletor de tipo OFERECE, na ordem em que aparece.
@@ -32,6 +32,7 @@ final class Caixa
         'CEO'      => 'CEO',
         'DC'       => 'DC / POP',
         'PREDIO'   => 'Prédio',
+        'POSTE'    => 'Poste',      // voltou ao menu em 30/09/2026, agora com cadastro próprio
         'PROBLEMA' => 'Problema',
         'RESERVA'  => 'Reserva',
     ];
@@ -48,6 +49,7 @@ final class Caixa
         'PROBLEMA' => 'bi-exclamation-triangle-fill',
         'RESERVA'  => 'bi-bookmark-fill',
         'FALHA'    => 'bi-exclamation-octagon-fill',
+        'PONTA'    => 'bi-record-circle',
     ];
 
     public static function icone(string $tipo): string
@@ -104,6 +106,14 @@ final class Caixa
                     . ' stroke-linecap="round"/>'
                     . '<circle cx="12" cy="16.6" r="1.1" fill="#fff"/>',
 
+        // Poste: o símbolo do UpperX — a haste com a cruzeta e a mão-francesa. O contorno branco
+        // por baixo é o que o separa do asfalto no satélite; o traço é fino de propósito, porque
+        // postes são muitos e não podem competir com as caixas.
+        'POSTE' => '<path d="M12 3.2v17.6M6 6.4h12M8.6 9.8h6.8" fill="none" stroke="#fff"'
+                 . ' stroke-width="4.6" stroke-linecap="round"/>'
+                 . '<path d="M12 3.2v17.6M6 6.4h12M8.6 9.8h6.8" fill="none" stroke="{cor}"'
+                 . ' stroke-width="2.4" stroke-linecap="round"/>',
+
         // Reserva: a sobra de cabo enrolada — o rolo visto de frente.
         'RESERVA' => '<circle cx="12" cy="12" r="7.8" fill="{cor}" stroke="#fff" stroke-width="1.6"/>'
                    . '<circle cx="12" cy="12" r="3.9" fill="none" stroke="#fff" stroke-width="1.5"/>'
@@ -124,6 +134,13 @@ final class Caixa
     public const CORES = ['#29B6F6', '#1E40AF', '#FF9100', '#E53935', '#43A047',
                           '#FDD835', '#8E24AA', '#EC407A', '#212121', '#9E9E9E', '#795548'];
 
+    /** O nome de cada cor da paleta, para os selects de cor (quarentena e seleção no mapa). */
+    public const NOMES_CORES = [
+        '#29B6F6' => 'Azul claro', '#1E40AF' => 'Azul', '#FF9100' => 'Laranja', '#E53935' => 'Vermelho',
+        '#43A047' => 'Verde', '#FDD835' => 'Amarelo', '#8E24AA' => 'Roxo', '#EC407A' => 'Rosa',
+        '#212121' => 'Preto', '#9E9E9E' => 'Cinza', '#795548' => 'Marrom',
+    ];
+
     public static function criar(int $regiaoId, string $tipo, string $nome, string $cor,
                                  float $lat, float $lng, string $usuario, array $extra = []): Resultado
     {
@@ -132,6 +149,10 @@ final class Caixa
 
         if (!in_array($tipo, self::TIPOS, true)) {
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'tipo'], 'Tipo de caixa inválido.');
+        }
+        if ($tipo === 'PONTA') {
+            return Resultado::erro('FTTH-SYS-002', ['campo' => 'tipo'],
+                'A ponta livre nasce sozinha, na ponta de um cabo lançado sem caixa.');
         }
         if ($nome === '' || mb_strlen($nome) > 80) {
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'nome'], 'Informe um nome de até 80 caracteres.');
@@ -143,15 +164,12 @@ final class Caixa
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'regiao'], 'Região inválida.');
         }
 
-        // O nome é único por região mesmo entre caixas excluídas: nome não se reaproveita.
-        $existe = Db::um('SELECT id, excluido_em FROM tab_ftth_caixa WHERE regiao_id = ? AND nome = ?',
-            [$regiaoId, $nome]);
+        // O nome é único por região entre as caixas ATIVAS: o de uma excluída volta a ficar
+        // livre (0.9.6). A auditoria é por id, então o histórico não se confunde.
+        $existe = self::nomeOcupado($regiaoId, $nome);
         if ($existe) {
-            return Resultado::erro('FTTH-SYS-002',
-                ['campo' => 'nome', 'caixa_id' => (int) $existe['id']],
-                $existe['excluido_em']
-                    ? 'Já existiu uma caixa com esse nome (excluída). Escolha outro nome.'
-                    : 'Já existe uma caixa com esse nome nesta região.');
+            return Resultado::erro('FTTH-SYS-002', ['campo' => 'nome', 'caixa_id' => $existe],
+                'Já existe uma caixa com esse nome nesta região.');
         }
 
         if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $cor)) {
@@ -169,8 +187,16 @@ final class Caixa
             [$vaoId, $reservaM, $lat, $lng] = $ancora;
         }
 
+        // Ponto novo em cima da ponta livre de um cabo: ele assume a ponta, e o cabo passa
+        // a terminar nele. A caixa vai para o lugar exato da ponta, como na emenda.
+        $ponta = in_array($tipo, ['RESERVA', 'POSTE'], true) ? null : self::pontaProxima($regiaoId, $lat, $lng);
+        if ($ponta !== null) {
+            $lat = (float) $ponta['lat'];
+            $lng = (float) $ponta['lng'];
+        }
+
         return Db::transacao(function () use ($regiaoId, $tipo, $nome, $cor, $lat, $lng, $usuario, $extra,
-                                              $vaoId, $reservaM) {
+                                              $vaoId, $reservaM, $ponta) {
             Db::exec(
                 'INSERT INTO tab_ftth_caixa
                     (regiao_id, tipo, nome, cor, lat, lng, capacidade, reserva_m, vao_id, pai_id,
@@ -186,9 +212,127 @@ final class Caixa
             }
             Auditoria::registrar('caixa', $id, 'criar', null,
                 ['nome' => $nome, 'tipo' => $tipo, 'lat' => $lat, 'lng' => $lng], $regiaoId);
+            $absorvida = $ponta !== null && self::absorverPonta((int) $ponta['id'], $id, $usuario);
             return Resultado::ok(['id' => $id, 'nome' => $nome, 'tipo' => $tipo, 'cor' => $cor,
-                                  'lat' => $lat, 'lng' => $lng]);
+                                  'lat' => $lat, 'lng' => $lng, 'ponta_absorvida' => $absorvida]);
         });
+    }
+
+    // ------------------------------------------------------------------ ponta livre de cabo
+
+    /**
+     * Âncora automática da ponta de um cabo lançado sem caixa (0.9.6).
+     *
+     * O vão continua ligando duas caixas — topologia, potência e diagrama dependem disso —,
+     * só que uma delas é esta PONTA: sem splitter, sem fusão, sem espelho, e fora das listas.
+     * Quem chama já está numa transação. O nome sai do id, então não disputa com os do usuário.
+     */
+    public static function criarPonta(int $regiaoId, float $lat, float $lng, string $cor, string $usuario): int
+    {
+        Db::exec(
+            'INSERT INTO tab_ftth_caixa (regiao_id, tipo, nome, cor, lat, lng, origem, criado_por, criado_em)
+             VALUES (?, "PONTA", ?, ?, ?, ?, "manual", ?, NOW())',
+            [$regiaoId, 'PONTA.tmp.' . bin2hex(random_bytes(6)),
+             preg_match('/^#[0-9A-Fa-f]{6}$/', $cor) ? $cor : '#00E676', $lat, $lng, $usuario]);
+        $id = Db::ultimoId();
+        Db::exec('UPDATE tab_ftth_caixa SET nome = ? WHERE id = ?', ['PONTA.' . $id, $id]);
+        Auditoria::registrar('caixa', $id, 'criar', null,
+            ['tipo' => 'PONTA', 'lat' => $lat, 'lng' => $lng], $regiaoId);
+        return $id;
+    }
+
+    /** A ponta livre ativa mais perto do ponto, dentro do raio de emenda — ou null. */
+    public static function pontaProxima(int $regiaoId, float $lat, float $lng, ?int $ignorar = null): ?array
+    {
+        $raio = Cabo::raioQuebra();
+        $margem = ($raio + 5) / 110540.0;
+        $melhor = null;
+        foreach (Db::todos(
+            'SELECT id, nome, lat, lng FROM tab_ftth_caixa
+              WHERE regiao_id = ? AND tipo = "PONTA" AND excluido_em IS NULL AND id <> ?
+                AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?',
+            [$regiaoId, $ignorar ?? 0, $lat - $margem, $lat + $margem,
+             $lng - $margem * 2, $lng + $margem * 2]) as $p) {
+            $d = Geo::distancia($lat, $lng, (float) $p['lat'], (float) $p['lng']);
+            if ($d <= $raio && ($melhor === null || $d < $melhor['distancia_m'])) {
+                $melhor = $p + ['distancia_m' => $d];
+            }
+        }
+        return $melhor;
+    }
+
+    /**
+     * A caixa assume a ponta livre: os vãos que terminavam na PONTA passam a terminar nela,
+     * as pontas do traçado vão para a posição da caixa e a PONTA sai. Recusa (false) quando
+     * a PONTA e a caixa já são as duas pontas de um mesmo vão — ele viraria um laço.
+     * Quem chama já está numa transação.
+     */
+    public static function absorverPonta(int $pontaId, int $caixaId, string $usuario): bool
+    {
+        if ($pontaId === $caixaId || (int) Db::valor(
+                'SELECT COUNT(*) FROM tab_ftth_cabo_vao
+                  WHERE excluido_em IS NULL
+                    AND ((caixa_ini_id = ? AND caixa_fim_id = ?) OR (caixa_ini_id = ? AND caixa_fim_id = ?))',
+                [$pontaId, $caixaId, $caixaId, $pontaId]) > 0) {
+            return false;
+        }
+        $caixa = Db::um('SELECT regiao_id, lat, lng FROM tab_ftth_caixa WHERE id = ?', [$caixaId]);
+        Db::exec('UPDATE tab_ftth_cabo_vao SET caixa_ini_id = ? WHERE caixa_ini_id = ? AND excluido_em IS NULL',
+                 [$caixaId, $pontaId]);
+        Db::exec('UPDATE tab_ftth_cabo_vao SET caixa_fim_id = ? WHERE caixa_fim_id = ? AND excluido_em IS NULL',
+                 [$caixaId, $pontaId]);
+        self::arrastarPontasDosVaos($caixaId, (float) $caixa['lat'], (float) $caixa['lng'], $usuario);
+        Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NOW(), alterado_por = ?, alterado_em = NOW() WHERE id = ?',
+                 [$usuario, $pontaId]);
+        Auditoria::registrar('caixa', $pontaId, 'ancorar', null, ['caixa' => $caixaId], (int) $caixa['regiao_id']);
+        return true;
+    }
+
+    /**
+     * Ancora a ponta livre numa caixa, a pedido do usuário (modo Mover: soltou uma em cima da
+     * outra e confirmou). A caixa fica onde está; é o cabo que vai até ela.
+     */
+    public static function ancorarPonta(int $pontaId, int $caixaId, string $usuario): Resultado
+    {
+        $ponta = Db::um('SELECT id, regiao_id, tipo FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL',
+                        [$pontaId]);
+        $caixa = Db::um('SELECT id, regiao_id, tipo, nome FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL',
+                        [$caixaId]);
+        if (!$ponta || $ponta['tipo'] !== 'PONTA') {
+            return Resultado::erro('FTTH-TOP-001', ['ponta' => $pontaId], 'Ponta livre não encontrada.');
+        }
+        if (!$caixa) {
+            return Resultado::erro('FTTH-TOP-001', ['caixa' => $caixaId]);
+        }
+        if (in_array($caixa['tipo'], ['PONTA', 'RESERVA', 'POSTE'], true)) {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId],
+                'A ponta livre só se ancora num ponto de verdade (CTO, CEO, POP…).');
+        }
+        if ((int) $caixa['regiao_id'] !== (int) $ponta['regiao_id']) {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $caixaId],
+                'A ponta e o ponto são de regiões diferentes.');
+        }
+
+        return Db::transacao(function () use ($pontaId, $caixaId, $caixa, $usuario) {
+            if (!self::absorverPonta($pontaId, $caixaId, $usuario)) {
+                return Resultado::erro('FTTH-GEO-003', ['caixa' => $caixaId],
+                    'O cabo já sai de ' . $caixa['nome'] . ': ancorar a outra ponta ali fecharia um laço.');
+            }
+            return Resultado::ok(['caixa' => $caixaId, 'nome' => $caixa['nome']]);
+        });
+    }
+
+    /** PONTA que ficou sem cabo (o cabo saiu) não tem razão de existir. Devolve quantas saíram. */
+    public static function limparPontasOrfas(int $regiaoId, string $usuario): int
+    {
+        return Db::exec(
+            'UPDATE tab_ftth_caixa c
+                SET c.excluido_em = NOW(), c.alterado_por = ?, c.alterado_em = NOW()
+              WHERE c.regiao_id = ? AND c.tipo = "PONTA" AND c.excluido_em IS NULL
+                AND NOT EXISTS (SELECT 1 FROM tab_ftth_cabo_vao v
+                                 WHERE v.excluido_em IS NULL
+                                   AND (v.caixa_ini_id = c.id OR v.caixa_fim_id = c.id))',
+            [$usuario, $regiaoId]);
     }
 
     /**
@@ -309,11 +453,21 @@ final class Caixa
         if ($nome === '' || !in_array($tipo, self::TIPOS, true)) {
             return Resultado::erro('FTTH-SYS-002');
         }
-        if ($nome !== $antes['nome']
-            && Db::valor('SELECT id FROM tab_ftth_caixa WHERE regiao_id = ? AND nome = ? AND id <> ?',
-                         [$antes['regiao_id'], $nome, $id])) {
+        if ($nome !== $antes['nome'] && self::nomeOcupado((int) $antes['regiao_id'], $nome, $id)) {
             return Resultado::erro('FTTH-SYS-002', ['campo' => 'nome'],
                 'Já existe uma caixa com esse nome nesta região.');
+        }
+        // A PONTA vira ponto de verdade (é assim que se ancora a ponta livre), mas nada vira PONTA.
+        if ($tipo === 'PONTA' && $antes['tipo'] !== 'PONTA') {
+            return Resultado::erro('FTTH-SYS-002', ['campo' => 'tipo'],
+                'A ponta livre nasce sozinha, na ponta de um cabo lançado sem caixa.');
+        }
+        // Poste não é ponta de cabo: o cabo passa por ele (vértice), não termina nele.
+        if ($tipo === 'POSTE' && $antes['tipo'] !== 'POSTE' && (int) Db::valor(
+                'SELECT COUNT(*) FROM tab_ftth_cabo_vao
+                  WHERE (caixa_ini_id = ? OR caixa_fim_id = ?) AND excluido_em IS NULL', [$id, $id]) > 0) {
+            return Resultado::erro('FTTH-SYS-002', ['campo' => 'tipo'],
+                'Este ponto é ponta de cabo e não pode virar poste: o cabo passa pelo poste, não termina nele.');
         }
 
         // Reserva: metros e o vão onde ela está. Vira reserva (ou é uma reserva do KMZ, sem
@@ -407,8 +561,99 @@ final class Caixa
     }
 
     /**
-     * Sugere o próximo nome seguindo o padrão do provedor (CTO.02.05 -> CTO.02.06).
-     * Só sugestão: quem decide o nome é o usuário.
+     * Exclui a caixa e deixa os cabos dela no mapa, terminando numa ponta livre (0.9.6).
+     *
+     * Antes, tirar uma caixa de uma rota exigia apagar os cabos dela primeiro. Agora os
+     * cabos ficam: as fusões e os splitters da caixa saem (eles moravam nela), e no lugar
+     * dela nasce uma PONTA, onde outra caixa pode ser solta depois. Cliente ligado bloqueia —
+     * perder a porta de um cliente é decisão que pede a confirmação do modo Selecionar.
+     */
+    public static function excluirMantendoCabos(int $id, ?int $versao, string $usuario): Resultado
+    {
+        $antes = Db::um('SELECT * FROM tab_ftth_caixa WHERE id = ? AND excluido_em IS NULL', [$id]);
+        if (!$antes) {
+            return Resultado::erro('FTTH-TOP-001', ['caixa' => $id]);
+        }
+        if (in_array($antes['tipo'], ['DC', 'PONTA', 'RESERVA'], true)) {
+            return Resultado::erro('FTTH-SYS-002', ['caixa' => $id],
+                'Este tipo de ponto não pode ser trocado por uma ponta livre.');
+        }
+        $clientes = (int) Db::valor(
+            'SELECT COUNT(*) FROM tab_ftth_porta p JOIN tab_ftth_splitter s ON s.id = p.splitter_id
+              WHERE s.caixa_id = ? AND s.excluido_em IS NULL', [$id]);
+        if ($clientes > 0) {
+            return Resultado::erro('FTTH-TOP-011', ['clientes' => $clientes],
+                'A caixa atende ' . $clientes . ' cliente(s). Desvincule antes, ou use o modo Selecionar, '
+                . 'que exclui junto com a confirmação.');
+        }
+        $vaos = array_map('intval', array_column(Db::todos(
+            'SELECT id FROM tab_ftth_cabo_vao
+              WHERE (caixa_ini_id = ? OR caixa_fim_id = ?) AND excluido_em IS NULL', [$id, $id]), 'id'));
+        if (!$vaos) {
+            return self::excluir($id, $versao, $usuario);
+        }
+
+        $falha = null;
+        try {
+            return Db::transacao(function () use ($id, $versao, $usuario, $antes, $vaos, &$falha) {
+                $exigir = static function (Resultado $r) use (&$falha): void {
+                    if (!$r->ok) {
+                        $falha = $r;
+                        throw new RuntimeException('exclusão recusada');
+                    }
+                };
+                if (!Versao::avancar('caixa', $id, $versao, $usuario)) {
+                    $exigir(Resultado::erro('FTTH-CONC-001',
+                        ['entidade' => 'caixa', 'id' => $id, 'versao_atual' => Versao::atual('caixa', $id)]));
+                }
+                foreach (Db::todos('SELECT id FROM tab_ftth_ligacao WHERE caixa_id = ?', [$id]) as $l) {
+                    $exigir(Topologia::desconectar((int) $l['id'], $usuario));
+                }
+                foreach (Db::todos('SELECT id FROM tab_ftth_splitter WHERE caixa_id = ? AND excluido_em IS NULL',
+                                   [$id]) as $s) {
+                    $exigir(Topologia::excluirSplitter((int) $s['id'], null, $usuario));
+                }
+                Db::exec('DELETE FROM tab_ftth_diagrama_no WHERE caixa_id = ?', [$id]);
+
+                $cor = (string) Db::valor('SELECT c.cor_rota FROM tab_ftth_cabo c
+                                             JOIN tab_ftth_cabo_vao v ON v.cabo_id = c.id WHERE v.id = ?', [$vaos[0]]);
+                $regiaoId = (int) $antes['regiao_id'];
+                $ponta = self::criarPonta($regiaoId, (float) $antes['lat'], (float) $antes['lng'], $cor, $usuario);
+                Db::exec('UPDATE tab_ftth_cabo_vao SET caixa_ini_id = ? WHERE caixa_ini_id = ? AND excluido_em IS NULL',
+                         [$ponta, $id]);
+                Db::exec('UPDATE tab_ftth_cabo_vao SET caixa_fim_id = ? WHERE caixa_fim_id = ? AND excluido_em IS NULL',
+                         [$ponta, $id]);
+                Db::exec('UPDATE tab_ftth_caixa SET excluido_em = NOW() WHERE id = ?', [$id]);
+                Auditoria::registrar('caixa', $id, 'excluir', $antes, ['ponta_livre' => $ponta], $regiaoId);
+
+                $r = Resultado::ok(['id' => $id, 'ponta' => $ponta, 'cabos' => count($vaos)]);
+                return Sincronizacao::caixa($id, $r, $usuario);
+            });
+        } catch (Throwable $e) {
+            if ($falha !== null) {
+                return $falha;
+            }
+            throw $e;
+        }
+    }
+
+    /** Id da caixa ATIVA que já usa este nome na região, ou null. */
+    public static function nomeOcupado(int $regiaoId, string $nome, ?int $ignorar = null): ?int
+    {
+        $id = Db::valor(
+            'SELECT id FROM tab_ftth_caixa
+              WHERE regiao_id = ? AND nome = ? AND excluido_em IS NULL AND id <> ?',
+            [$regiaoId, $nome, $ignorar ?? 0]);
+        return $id ? (int) $id : null;
+    }
+
+    /**
+     * Sugere o nome seguindo o padrão do provedor. Só sugestão: quem decide é o usuário.
+     *
+     * Sem base (o modal "Novo ponto"): a série é a do maior nome ATIVO do tipo, e a sugestão
+     * é o MENOR número livre dela — excluir CTO.03 e CTO.04 faz a próxima ser CTO.03 de novo,
+     * e um buraco no meio (CTO.02 excluída entre 01 e 03) é preenchido primeiro.
+     * Com base: o primeiro livre DEPOIS da base (CTO.02.05 -> CTO.02.06, pulando ocupados).
      */
     public static function sugerirNome(int $regiaoId, string $tipo, ?string $base = null): ?string
     {
@@ -418,23 +663,42 @@ final class Caixa
             if (!preg_match('/^(.*?)(\d+)$/', trim($base), $m)) {
                 return null;
             }
-            $largura = strlen($m[2]);
-            for ($i = (int) $m[2] + 1; $i <= (int) $m[2] + 50; $i++) {
-                $tentativa = $m[1] . str_pad((string) $i, $largura, '0', STR_PAD_LEFT);
-                if (!Db::valor('SELECT id FROM tab_ftth_caixa WHERE regiao_id = ? AND nome = ?',
-                               [$regiaoId, $tentativa])) {
-                    return $tentativa;
-                }
-            }
-            return null;
+            return self::primeiroLivre($regiaoId, $m[1], strlen($m[2]), (int) $m[2] + 1);
         }
 
         // Só nomes que terminam em número servem de base. Antes, um "Caixa" aqui fazia a
         // função chamar a si mesma para sempre e o 504 derrubava o painel inteiro (29/09/2026).
         $ultimo = Db::valor(
             'SELECT nome FROM tab_ftth_caixa
-              WHERE regiao_id = ? AND tipo = ? AND nome REGEXP \'[0-9]$\'
+              WHERE regiao_id = ? AND tipo = ? AND excluido_em IS NULL AND nome REGEXP \'[0-9]$\'
               ORDER BY nome DESC LIMIT 1', [$regiaoId, $tipo]);
-        return $ultimo ? self::sugerirNome($regiaoId, $tipo, (string) $ultimo) : $prefixo . '.01';
+        if (!$ultimo || !preg_match('/^(.*?)(\d+)$/', (string) $ultimo, $m)) {
+            return self::primeiroLivre($regiaoId, $prefixo . '.', 2, 1);
+        }
+        return self::primeiroLivre($regiaoId, $m[1], strlen($m[2]), 1);
+    }
+
+    /**
+     * O menor "prefixo + número" livre entre as caixas ativas, a partir de $inicio.
+     * Uma consulta só: os números ocupados da série vêm juntos e a conta é feita aqui.
+     */
+    private static function primeiroLivre(int $regiaoId, string $prefixo, int $largura, int $inicio): ?string
+    {
+        $ocupados = [];
+        foreach (Db::todos(
+            'SELECT nome FROM tab_ftth_caixa
+              WHERE regiao_id = ? AND excluido_em IS NULL AND nome LIKE ?',
+            [$regiaoId, addcslashes($prefixo, '%_\\') . '%']) as $r) {
+            $resto = substr((string) $r['nome'], strlen($prefixo));
+            if ($resto !== '' && ctype_digit($resto)) {
+                $ocupados[(int) $resto] = true;
+            }
+        }
+        for ($i = max(1, $inicio); $i <= $inicio + 1000; $i++) {
+            if (!isset($ocupados[$i])) {
+                return $prefixo . str_pad((string) $i, $largura, '0', STR_PAD_LEFT);
+            }
+        }
+        return null;
     }
 }

@@ -38,14 +38,18 @@ T::certo('comprimento óptico é maior que o geométrico (folga)',
     (float) $vaos[0]['comprimento_optico'] > (float) $vaos[0]['comprimento_geo']);
 
 // --- recusas
-T::igual('recusa traçado que não começa em caixa', 'FTTH-GEO-005',
-    Cabo::criar($regiao, ['cabo_tipo_id' => $tipo6],
-        [['tipo' => 'VERTICE', 'lat' => -24.88, 'lng' => -52.21], ['tipo' => 'CAIXA', 'id' => $b]],
-        'teste')->primeiroCodigo());
+// 0.9.6: ponta sem caixa vira ponta livre (a suíte 17 cobre o resto do ciclo).
+$livre = Cabo::criar($regiao, ['cabo_tipo_id' => $tipo6],
+    [['tipo' => 'VERTICE', 'lat' => -24.8795, 'lng' => -52.2105], ['tipo' => 'CAIXA', 'id' => $b]], 'teste');
+T::certo('traçado que começa no vazio é aceito', $livre->ok, json_encode($livre->errors));
+T::igual('e a ponta dele é uma PONTA', 'PONTA', Db::valor(
+    'SELECT c.tipo FROM tab_ftth_cabo_vao v JOIN tab_ftth_caixa c ON c.id = v.caixa_ini_id WHERE v.id = ?',
+    [(int) $livre->data['vaos'][0]]));
+Cabo::excluir((int) $livre->data['cabo_id'], 'teste');
 
-T::igual('recusa traçado que não termina em caixa', 'FTTH-GEO-005',
+T::igual('recusa trecho sem comprimento', 'FTTH-GEO-004',
     Cabo::criar($regiao, ['cabo_tipo_id' => $tipo6],
-        [['tipo' => 'CAIXA', 'id' => $a], ['tipo' => 'VERTICE', 'lat' => -24.88, 'lng' => -52.21]],
+        [['tipo' => 'CAIXA', 'id' => $a], ['tipo' => 'VERTICE', 'lat' => -24.8800, 'lng' => -52.2100]],
         'teste')->primeiroCodigo());
 
 T::igual('recusa vão com a mesma caixa nas duas pontas', 'FTTH-GEO-003',
@@ -97,8 +101,18 @@ T::igual('e diz qual é a caixa', 'T.CABO.A', $det['caixas'][0]['nome'] ?? null)
 T::certo('a mensagem cita a caixa pelo nome',
     strpos((string) ($rRec->errors[0]['message'] ?? ''), 'T.CABO.A') !== false,
     (string) ($rRec->errors[0]['message'] ?? ''));
-Db::exec('DELETE FROM tab_ftth_ligacao WHERE id = ?', [$lig]);
-T::certo('depois de desconectar, o cabo sai', Cabo::excluir((int) $novo->data['cabo_id'], 'teste')->ok);
+// A prévia do modal mostra onde estão as fusões antes de confirmar.
+$prev = Cabo::previaExclusao((int) $novo->data['cabo_id']);
+T::igual('a prévia conta as fusões e diz a caixa', [1, 'T.CABO.A'], [$prev['ligacoes'], $prev['caixas'][0]['nome']]);
+
+// 30/09/2026: confirmado no modal, as ligações saem junto.
+$rForca = Cabo::excluir((int) $novo->data['cabo_id'], 'teste', true);
+T::certo('confirmado, o cabo sai mesmo com fibra ligada', $rForca->ok, json_encode($rForca->errors));
+T::igual('e diz quantas ligações desfez', 1, $rForca->data['ligacoes_desfeitas'] ?? null);
+T::igual('a ligação saiu', null, Db::valor('SELECT id FROM tab_ftth_ligacao WHERE id = ?', [$lig]));
+T::certo('e ficou no histórico', (int) Db::valor(
+    'SELECT COUNT(*) FROM tab_ftth_historico WHERE entidade = "ligacao" AND entidade_id = ? AND acao = "desconectar"',
+    [$lig]) === 1);
 
 // ------------------------------------------------------------------ editar atributos
 // Decisão de 22/09/2026: "Editar cabo" mexe nos dados, nunca no traçado.

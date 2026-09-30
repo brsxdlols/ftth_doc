@@ -176,12 +176,13 @@ ON DUPLICATE KEY UPDATE `lambda_nm` = `lambda_nm`;
 
 -- ================================================================ planta externa
 -- Caixa = todo elemento pontual da planta.
--- UNIQUE(regiao_id, nome) e GLOBAL, incluindo excluidos: nome de caixa nunca e reaproveitado,
--- para o historico continuar legivel.
+-- O nome e unico por regiao so entre as caixas ATIVAS (0.9.6): `nome_ativo` e NULL nas
+-- excluidas, e o UNIQUE aceita varios NULL. O historico nao se confunde porque a auditoria
+-- e por id. PONTA (0.9.6) e a ancora automatica da ponta livre de um cabo.
 CREATE TABLE IF NOT EXISTS `tab_ftth_caixa` (
   `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `regiao_id`     INT UNSIGNED NOT NULL,
-  `tipo`          ENUM('DC','PREDIO','POSTE','CEO','CTO','CTO_AP','CLIENTE','RESERVA','PROBLEMA','FALHA') NOT NULL,
+  `tipo`          ENUM('DC','PREDIO','POSTE','CEO','CTO','CTO_AP','CLIENTE','RESERVA','PROBLEMA','FALHA','PONTA') NOT NULL,
   `nome`          VARCHAR(80)  NOT NULL,
   `cor`           CHAR(7)      NOT NULL DEFAULT '#00C853',
   `lat`           DECIMAL(10,7) NOT NULL,
@@ -202,8 +203,10 @@ CREATE TABLE IF NOT EXISTS `tab_ftth_caixa` (
   `alterado_por`  VARCHAR(60)  NULL,
   `alterado_em`   DATETIME     NULL,
   `excluido_em`   DATETIME     NULL,
+  `nome_ativo`    VARCHAR(80)  AS (IF(`excluido_em` IS NULL, `nome`, NULL)) PERSISTENT,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_caixa_nome` (`regiao_id`, `nome`),
+  UNIQUE KEY `uq_caixa_nome_ativo` (`regiao_id`, `nome_ativo`),
+  KEY `ix_nome` (`regiao_id`, `nome`),
   UNIQUE KEY `uq_qr` (`qr_token`),
   KEY `ix_regiao_ativo` (`regiao_id`, `excluido_em`),
   KEY `ix_bbox` (`regiao_id`, `lat`, `lng`),
@@ -641,6 +644,60 @@ SET @tem := (SELECT COUNT(*) FROM information_schema.STATISTICS
                 AND INDEX_NAME = 'ix_vao');
 SET @sql := IF(@tem = 0,
   'ALTER TABLE `tab_ftth_caixa` ADD KEY `ix_vao` (`vao_id`)',
+  'DO 1');
+PREPARE st FROM @sql;
+EXECUTE st;
+DEALLOCATE PREPARE st;
+
+-- 0.9.6: PONTA, a ancora automatica da ponta livre de um cabo.
+SET @tem := (SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tab_ftth_caixa'
+                AND COLUMN_NAME = 'tipo' AND COLUMN_TYPE LIKE '%''PONTA''%');
+SET @sql := IF(@tem = 0,
+  'ALTER TABLE `tab_ftth_caixa` MODIFY COLUMN `tipo` ENUM("DC","PREDIO","POSTE","CEO","CTO","CTO_AP","CLIENTE","RESERVA","PROBLEMA","FALHA","PONTA") NOT NULL',
+  'DO 1');
+PREPARE st FROM @sql;
+EXECUTE st;
+DEALLOCATE PREPARE st;
+
+-- 0.9.6: nome de caixa excluida volta a ficar livre. O UNIQUE passa de (regiao, nome) para
+-- (regiao, nome_ativo), e nome_ativo e NULL nas excluidas. Ordem: coluna, indice de busca,
+-- UNIQUE novo, e so entao cai o antigo — nunca fica um instante sem unicidade.
+SET @tem := (SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tab_ftth_caixa'
+                AND COLUMN_NAME = 'nome_ativo');
+SET @sql := IF(@tem = 0,
+  'ALTER TABLE `tab_ftth_caixa` ADD COLUMN `nome_ativo` VARCHAR(80) AS (IF(`excluido_em` IS NULL, `nome`, NULL)) PERSISTENT AFTER `excluido_em`',
+  'DO 1');
+PREPARE st FROM @sql;
+EXECUTE st;
+DEALLOCATE PREPARE st;
+
+SET @tem := (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tab_ftth_caixa'
+                AND INDEX_NAME = 'ix_nome');
+SET @sql := IF(@tem = 0,
+  'ALTER TABLE `tab_ftth_caixa` ADD KEY `ix_nome` (`regiao_id`, `nome`)',
+  'DO 1');
+PREPARE st FROM @sql;
+EXECUTE st;
+DEALLOCATE PREPARE st;
+
+SET @tem := (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tab_ftth_caixa'
+                AND INDEX_NAME = 'uq_caixa_nome_ativo');
+SET @sql := IF(@tem = 0,
+  'ALTER TABLE `tab_ftth_caixa` ADD UNIQUE KEY `uq_caixa_nome_ativo` (`regiao_id`, `nome_ativo`)',
+  'DO 1');
+PREPARE st FROM @sql;
+EXECUTE st;
+DEALLOCATE PREPARE st;
+
+SET @tem := (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tab_ftth_caixa'
+                AND INDEX_NAME = 'uq_caixa_nome');
+SET @sql := IF(@tem > 0,
+  'ALTER TABLE `tab_ftth_caixa` DROP INDEX `uq_caixa_nome`',
   'DO 1');
 PREPARE st FROM @sql;
 EXECUTE st;
