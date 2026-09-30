@@ -214,7 +214,8 @@ decidir_acao() {
         # Pacote local: a versao e a do manifest de dentro dele, nao a do GitHub.
         [ -f "$OPT_PACOTE" ] || morrer "pacote nao encontrado: $OPT_PACOTE"
         local v
-        v="$(tar xzf "$OPT_PACOTE" -O --wildcards '*manifest.json' 2>/dev/null \n            | php -r '$m = json_decode(stream_get_contents(STDIN), true); echo $m["version"] ?? "";' 2>/dev/null || true)"
+        v="$(tar xzf "$OPT_PACOTE" -O --wildcards '*manifest.json' 2>/dev/null \
+            | php -r '$m = json_decode(stream_get_contents(STDIN), true); echo $m["version"] ?? "";' 2>/dev/null || true)"
         [ -n "$v" ] || morrer "manifest.json nao encontrado dentro de $OPT_PACOTE"
         VERSAO_ALVO="v$v"
     elif [ -n "$OPT_VERSAO" ]; then
