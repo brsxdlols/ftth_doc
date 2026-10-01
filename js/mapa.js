@@ -151,6 +151,45 @@
         return camadas[tipo] !== false;
     }
 
+    // Os tipos de ponto (Caixa::TIPOS). O modo Selecionar manda só os visíveis: camada
+    // desligada esconde o ponto E tira ele da seleção — antes a Cor pintava o que estava
+    // escondido (produção, 01/10/2026). A ponta livre fica de fora: ela é do cabo, e o cabo
+    // entra inteiro pela camada Cabos (com_cabos).
+    var TIPOS_PONTO = ['DC', 'PREDIO', 'POSTE', 'CEO', 'CTO', 'CTO_AP', 'CLIENTE', 'RESERVA',
+                       'PROBLEMA', 'FALHA'];
+    var CAMADAS_PONTO = [['CTO', 'CTO'], ['CEO', 'CEO'], ['DC', 'DC / POP'], ['PREDIO', 'Prédio'],
+                         ['PROBLEMA', 'Problema'], ['RESERVA', 'Reserva'], ['POSTES', 'Postes']];
+
+    /**
+     * A ficha abriu (lista de Pontos, busca) e o mapa centralizou num ponto cuja camada está
+     * desligada: sem o aviso, o usuário fica procurando um marcador que não está lá.
+     */
+    function avisarCamadaOculta(tipo) {
+        if (!tipo || visivel(tipo)) return;
+        var nome = { CTO: 'CTO', CTO_AP: 'CTO', CEO: 'CEO', DC: 'DC / POP', PREDIO: 'Prédio',
+                     CLIENTE: 'Prédio', PROBLEMA: 'Problema', FALHA: 'Problema', RESERVA: 'Reserva',
+                     POSTE: 'Postes', PONTA: 'Cabos' }[tipo] || tipo;
+        FTTH.toast('info', 'A camada ' + nome + ' está desligada: o ponto não aparece no mapa. '
+            + 'Ligue-a na aba Camadas.');
+    }
+
+    function tiposVisiveis() {
+        return TIPOS_PONTO.filter(visivel);
+    }
+
+    /** O aviso amarelo dos cards do Selecionar: só aparece com camada de ponto desligada. */
+    function avisarFiltroSelecao() {
+        var todas = CAMADAS_PONTO.concat([['CABOS', 'Cabos']]);
+        var ligadas = todas.filter(function (c) { return camadas[c[0]]; });
+        var txt = '';
+        if (!ligadas.length) {
+            txt = 'Nenhuma camada de ponto ou cabo ligada: nada entra na seleção.';
+        } else if (ligadas.length < todas.length) {
+            txt = 'Só camadas visíveis: ' + ligadas.map(function (c) { return c[1]; }).join(', ') + '.';
+        }
+        $('.ftth-sel-filtro').text(txt);
+    }
+
     /**
      * Pede o que está na área visível. `soArea` vem do arrasto/zoom do mapa: aí nada na
      * rede mudou. Sem ele a chamada vem de uma alteração (criar, mover, excluir), e a lista
@@ -224,6 +263,21 @@
     /** O número no botão diz o que está ligado sem precisar abrir o menu. */
     function atualizarContaCamadas() {
         $('#camadas-conta').text($('.cam:checked').length);
+        // Tudo marcado: o botão do título desmarca; faltando alguma, ele marca.
+        $('#cam-todas').text($('.cam:not(:checked)').length ? 'Marcar todos' : 'Desmarcar todos');
+    }
+
+    /** Camada mudou: redesenha e grava na hora (fechar a página não pode devolver a camada). */
+    function camadasMudaram() {
+        atualizarContaCamadas();
+        carregar();
+        if (modo === 'selecionar') camadaNaSelecao();
+        FTTH.chamar({
+            url: 'mapa.php?ajax=camadas',
+            method: 'POST',
+            data: { csrf: (window.FTTH_MAPA || {}).csrf, camadas: JSON.stringify(camadas) },
+            onErro: function (m) { FTTH.toast('erro', 'A camada não foi gravada: ' + m); }
+        });
     }
 
     function desenhar(d) {
@@ -343,6 +397,11 @@
                     // Nos modos de desenho, clicar no cabo é clicar no mapa: a polilinha tem
                     // 5 px de espessura e engolia o clique, abrindo a ficha do cabo bem na
                     // hora em que o técnico queria marcar uma caixa em cima dele.
+                    // Com a seleção já feita, o clique no cabo tira ou põe ele inteiro.
+                    if (modo === 'selecionar' && selecao) {
+                        cliqueCaboSelecionar(v.cabo_id);
+                        return;
+                    }
                     if (modo === 'caixa' || modo === 'cabo' || modo === 'selecionar') {
                         cliqueNoMapa(e);
                         return;
@@ -422,6 +481,7 @@
         FTTH.chamar({
             url: 'mapa.php?ajax=ficha&id=' + id,
             onOk: function (c) {
+                avisarCamadaOculta(c.tipo);
                 if (c.tipo === 'RESERVA') {
                     painel(fichaReserva(c));
                     return;
@@ -1623,6 +1683,7 @@
         limparSelecao();
         $('#sel-barra').hide();
         $('#sel-card').show();
+        avisarFiltroSelecao();
         atualizarArea();
         ajustarToasts();
     }
@@ -1677,7 +1738,8 @@
         FTTH.chamar({
             url: 'mapa.php?ajax=selecionar',
             method: 'POST',
-            data: { csrf: cfg.csrf, regiao: regiao,
+            data: { csrf: cfg.csrf, regiao: regiao, tipos: JSON.stringify(tiposVisiveis()),
+                    com_cabos: camadas.CABOS ? 1 : 0,
                     poligono: JSON.stringify(areaSel.map(function (p) { return [p.lat(), p.lng()]; })) },
             onOk: aplicarSelecao,
             onErro: function (m) { FTTH.toast('erro', m); $b.prop('disabled', false); }
@@ -1686,8 +1748,10 @@
 
     /** A prévia do servidor vira o destaque no mapa e a barra de baixo. */
     function aplicarSelecao(d) {
-        if (!d.caixas.length && !d.protegidas.length) {
-            FTTH.toast('info', 'Nenhum ponto dentro da área. Ajuste os cantos ou desenhe outra.');
+        if (!d.caixas.length && !d.protegidas.length && !d.cabos_sel.length) {
+            FTTH.toast('info', 'Nenhum ponto ou cabo dentro da área'
+                + ($('.ftth-sel-filtro').first().text() ? ' nas camadas visíveis' : '')
+                + '. Ajuste os cantos ou desenhe outra.');
             $('#sel-concluir').prop('disabled', areaSel.length < 3);
             selecao = null;
             destacarSelecao();
@@ -1705,7 +1769,7 @@
         $('#sel-card').hide();
         $('#sel-n-caixas').text(d.caixas.length);
         $('#sel-n-cabos').text(d.cabos.length);
-        $('#sel-excluir').prop('disabled', !d.caixas.length);
+        $('#sel-excluir').prop('disabled', !d.caixas.length && !d.cabos_sel.length);
         $('#sel-barra').show();
         ajustarToasts();
         destacarSelecao();
@@ -1721,14 +1785,34 @@
         var ids = selecao.caixas.concat(selecao.protegidas).map(function (x) { return Number(x.id); });
         var i = ids.indexOf(id);
         if (i >= 0) ids.splice(i, 1); else ids.push(id);
+        refazerPrevia(ids, idsCabosSel());
+    }
 
+    /** Clique num cabo com a seleção feita: tira ou põe o cabo inteiro. */
+    function cliqueCaboSelecionar(caboId) {
+        var cabos = idsCabosSel();
+        var i = cabos.indexOf(Number(caboId));
+        if (i >= 0) cabos.splice(i, 1); else cabos.push(Number(caboId));
+        refazerPrevia(idsPontosSel(), cabos);
+    }
+
+    function idsPontosSel() {
+        return selecao ? selecao.caixas.concat(selecao.protegidas).map(function (x) { return Number(x.id); }) : [];
+    }
+    function idsCabosSel() {
+        return selecao ? selecao.cabos_sel.map(function (x) { return Number(x.id); }) : [];
+    }
+
+    /** Prévia de uma seleção ajustada (clique, camada desligada). Vazia: volta a desenhar. */
+    function refazerPrevia(ids, cabos) {
         var cfg = window.FTTH_MAPA || {};
         FTTH.chamar({
             url: 'mapa.php?ajax=selecionar',
             method: 'POST',
-            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(ids) },
+            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(ids),
+                    cabos: JSON.stringify(cabos || []) },
             onOk: function (d) {
-                if (!d.caixas.length && !d.protegidas.length) {
+                if (!d.caixas.length && !d.protegidas.length && !d.cabos_sel.length) {
                     iniciarSelecao();       // tirou o último: volta a desenhar
                     return;
                 }
@@ -1736,6 +1820,24 @@
             },
             onErro: function (m) { FTTH.toast('erro', m); }
         });
+    }
+
+    /**
+     * Camada mexida no modo Selecionar. Com a seleção já feita, o tipo que sumiu da tela sai
+     * dela — Cor e Excluir nunca podem alcançar o que não está à vista. Ligar uma camada não
+     * acrescenta nada: o que entra é decidido pela área, com Nova área.
+     */
+    function camadaNaSelecao() {
+        avisarFiltroSelecao();
+        if (!selecao) return;
+        var todas = selecao.caixas.concat(selecao.protegidas);
+        var ficam = todas.filter(function (c) { return visivel(c.tipo); });
+        var cabos = camadas.CABOS ? idsCabosSel() : [];
+        var saem = (todas.length - ficam.length) + (selecao.cabos_sel.length - cabos.length);
+        if (!saem) return;
+        FTTH.toast('info', plural(saem, 'item saiu', 'itens saíram') + ' da seleção: a camada foi desligada.');
+        if (!ficam.length && !cabos.length) { iniciarSelecao(); return; }
+        refazerPrevia(ficam.map(function (c) { return Number(c.id); }), cabos);
     }
 
     /** Anel nos pontos que saem e vermelho nos cabos que saem. Roda a cada redesenho. */
@@ -1762,7 +1864,7 @@
     }
 
     function abrirExclusaoLote() {
-        if (!selecao || !selecao.caixas.length) return;
+        if (!selecao || (!selecao.caixas.length && !selecao.cabos_sel.length)) return;
         var r = selecao.resumo;
         var tipos = Object.keys(r.por_tipo).map(function (t) {
             return r.por_tipo[t] + ' ' + (ROTULO_TIPO[t] || t);
@@ -1777,9 +1879,11 @@
         if (r.cabos_partidos) cabos.push(r.cabos_partidos + ' partido(s) em dois');
 
         var html = '<p class="ftth-sub" style="margin:0 0 8px">Sai do mapa e continua no histórico. '
-                 + 'Cabo que liga um ponto de dentro a um de fora sai inteiro até o ponto de fora.</p>'
+                 + (r.caixas ? 'Cabo que liga um ponto de dentro a um de fora sai inteiro até o ponto de fora. ' : '')
+                 + (r.cabos_sel ? 'Cabo selecionado sai inteiro, mesmo a parte fora da área.' : '') + '</p>'
                  + '<ul class="ftth-lote-lista">'
-                 + li('Pontos' + (tipos ? ' <small>(' + esc(tipos) + ')</small>' : ''), r.caixas)
+                 + (r.caixas ? li('Pontos' + (tipos ? ' <small>(' + esc(tipos) + ')</small>' : ''), r.caixas) : '')
+                 + (r.cabos_sel ? li('Cabos selecionados', r.cabos_sel) : '')
                  + (r.vaos ? li('Trechos de cabo', r.vaos + (cabos.length ? ' <small>· ' + cabos.join(', ')
                                 + '</small>' : '')) : '')
                  + (r.reservas ? li('Reservas nos trechos', r.reservas) : '')
@@ -1811,31 +1915,136 @@
         if (selecao.clientes.length) setTimeout(function () { $('#lote-confirmacao').trigger('focus'); }, 50);
     }
 
-    /** Botão Cor da seleção: a paleta do cadastro, aplicada a todos os pontos selecionados. */
+    /* ------------------------------------------------------------------ exportar KMZ */
+
+    /**
+     * Baixa o KMZ. Não dá para usar o FTTH.chamar: a resposta boa é um ARQUIVO, e só a ruim é
+     * JSON. O fetch olha o Content-Type e decide — erro nunca vira um .kmz corrompido.
+     */
+    function baixarKmz(dados, $botao, aoTerminar) {
+        var fd = new FormData();
+        fd.append('csrf', (window.FTTH_MAPA || {}).csrf);
+        fd.append('regiao', regiao);
+        Object.keys(dados).forEach(function (k) { fd.append(k, dados[k]); });
+        var htmlBotao = $botao.html();
+        $botao.prop('disabled', true).html('<i class="bi-hourglass-split"></i> Gerando…');
+        var fim = function () { $botao.prop('disabled', false).html(htmlBotao); };
+
+        fetch('mapa.php?ajax=exportar_kmz', { method: 'POST', body: fd, credentials: 'same-origin' })
+            .then(function (r) {
+                if ((r.headers.get('Content-Type') || '').indexOf('json') >= 0) {
+                    return r.json().then(function (j) {
+                        throw new Error(((j.errors || [])[0] || {}).message || 'Não foi possível exportar.');
+                    });
+                }
+                var m = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+                return r.blob().then(function (b) {
+                    var url = URL.createObjectURL(b);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = m ? m[1] : 'ftth.kmz';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+                    fim();
+                    FTTH.toast('ok', 'Arquivo ' + a.download + ' baixado.');
+                    if (aoTerminar) aoTerminar();
+                });
+            })
+            .catch(function (e) { fim(); FTTH.toast('erro', e.message); });
+    }
+
+    var timerContaExp = null;
+
+    function dadosExportacao() {
+        var tipos = $('.exp-tipo:checked').map(function () { return this.value; }).get();
+        return {
+            tipos: JSON.stringify(tipos.filter(function (t) { return t !== 'CABOS'; })),
+            cabos: tipos.indexOf('CABOS') >= 0 ? '1' : '0',
+            todas: $('#exp-todas').is(':checked') ? '1' : '0'
+        };
+    }
+
+    /** Os checkboxes nascem como as camadas ligadas: o que se vê é o que se costuma querer. */
+    function abrirExportar() {
+        var camadaDe = { POSTE: 'POSTES' };
+        $('.exp-tipo').each(function () {
+            this.checked = camadas[camadaDe[this.value] || this.value] !== false;
+        });
+        $('#exp-todas').prop('checked', false);
+        $('#exp-saida').empty();
+        $('#modal-exportar').show();
+        contarExportacao();
+    }
+
+    function contarExportacao() {
+        var faltando = $('.exp-tipo:not(:checked)').length;
+        $('#exp-todos').text(faltando ? 'Marcar todos' : 'Desmarcar todos');
+        $('#exp-baixar').prop('disabled', true);
+        $('#exp-conta').text('Contando…');
+        clearTimeout(timerContaExp);
+        timerContaExp = setTimeout(function () {
+            FTTH.chamar({
+                url: 'mapa.php?ajax=exportar_contar',
+                method: 'POST',
+                data: $.extend({ csrf: (window.FTTH_MAPA || {}).csrf, regiao: regiao }, dadosExportacao()),
+                onOk: function (d) {
+                    $('#exp-conta').text(d.pontos || d.vaos
+                        ? plural(d.pontos, 'ponto', 'pontos') + ' e ' + plural(d.vaos, 'trecho de cabo', 'trechos de cabo') + '.'
+                        : 'Nada a exportar com essa escolha.');
+                    $('#exp-baixar').prop('disabled', !(d.pontos || d.vaos));
+                },
+                onErro: function (m) { $('#exp-conta').text(m); }
+            });
+        }, 200);
+    }
+
+    /** Botão Exportar da seleção: exatamente os pontos e cabos selecionados. Baixou: volta a Navegar. */
+    function exportarSelecao() {
+        if (!selecao) return;
+        baixarKmz({ caixas: JSON.stringify(idsPontosSel()), cabos_sel: JSON.stringify(idsCabosSel()) },
+                  $('#sel-exportar'), function () { definirModo('navegar'); });
+    }
+
+    /**
+     * Botão Cor da seleção: a paleta do cadastro para os pontos e a de rota para os cabos.
+     * Cada paleta só aparece se a seleção tem aquilo; lado sem cor escolhida fica como está.
+     */
     function abrirCorLote() {
         if (!selecao) return;
         var n = selecao.caixas.length + selecao.protegidas.length;
-        $('#lc-texto').text('Pinta ' + plural(n, 'ponto selecionado', 'pontos selecionados')
-            + '. A ponta livre fica de fora: ela tem a cor do cabo.');
-        $('#lc-cores .ftth-cor').removeClass('ativo');
+        var nc = selecao.cabos_sel.length;
+        var partes = [];
+        if (n) partes.push(plural(n, 'ponto selecionado', 'pontos selecionados'));
+        if (nc) partes.push(plural(nc, 'cabo selecionado', 'cabos selecionados'));
+        $('#lc-texto').text('Pinta ' + partes.join(' e ') + '.'
+            + (n && nc ? ' Escolha uma cor ou as duas; o que ficar sem cor não muda.' : ''));
+        $('#lc-bloco-pontos').toggle(n > 0);
+        $('#lc-bloco-cabos').toggle(nc > 0);
+        $('#lc-cores .ftth-cor, #lc-cores-cabo .ftth-cor').removeClass('ativo');
         $('#lc-saida').empty();
         $('#lc-aplicar').prop('disabled', true);
         $('#modal-cor-lote').show();
     }
 
     function aplicarCorLote() {
-        var cor = $('#lc-cores .ftth-cor.ativo').data('cor');
-        if (!selecao || !cor) return;
+        var cor = $('#lc-cores .ftth-cor.ativo').data('cor') || '';
+        var corCabo = $('#lc-cores-cabo .ftth-cor.ativo').data('cor') || '';
+        if (!selecao || (!cor && !corCabo)) return;
         var cfg = window.FTTH_MAPA || {};
-        var ids = selecao.caixas.concat(selecao.protegidas).map(function (c) { return c.id; });
         var $b = $('#lc-aplicar').prop('disabled', true);
         FTTH.chamar({
             url: 'mapa.php?ajax=cor_lote',
             method: 'POST',
-            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(ids), cor: cor },
+            data: { csrf: cfg.csrf, regiao: regiao, caixas: JSON.stringify(idsPontosSel()), cor: cor,
+                    cabos: JSON.stringify(idsCabosSel()), cor_cabo: corCabo },
             onOk: function (d) {
                 $('#modal-cor-lote').hide();
-                FTTH.toast('ok', plural(d.alterados, 'ponto pintado', 'pontos pintados') + '.');
+                var feitos = [];
+                if (cor) feitos.push(plural(d.alterados, 'ponto pintado', 'pontos pintados'));
+                if (corCabo) feitos.push(plural(d.cabos_alterados, 'cabo pintado', 'cabos pintados'));
+                FTTH.toast('ok', feitos.join(' e ') + '.');
                 definirModo('navegar');   // pintou: a seleção acabou, como no Excluir
                 carregar();
             },
@@ -1860,12 +2069,16 @@
             method: 'POST',
             data: { csrf: cfg.csrf, regiao: regiao,
                     caixas: JSON.stringify(selecao.caixas.map(function (c) { return c.id; })),
+                    cabos: JSON.stringify(idsCabosSel()),
                     confirmacao: $('#lote-confirmacao').val() },
             onOk: function (d, resp) {
                 var r = d.resumo;
+                var feitos = [];
+                if (r.caixas) feitos.push(plural(r.caixas, 'ponto', 'pontos'));
+                if (r.cabos_sel) feitos.push(plural(r.cabos_sel, 'cabo', 'cabos'));
+                if (r.vaos) feitos.push(plural(r.vaos, 'trecho de cabo', 'trechos de cabo'));
                 $('#modal-lote').hide();
-                mostrarAvisos(resp, 'Excluídos: ' + plural(r.caixas, 'ponto', 'pontos')
-                    + (r.vaos ? ' e ' + plural(r.vaos, 'trecho de cabo', 'trechos de cabo') : '') + '.');
+                mostrarAvisos(resp, 'Excluídos: ' + feitos.join(', ') + '.');
                 definirModo('navegar');   // excluiu: a seleção acabou (limpa a área e os cards)
                 carregar();
             },
@@ -3178,11 +3391,23 @@
         $('#sel-nova').on('click', iniciarSelecao);
         $('#sel-excluir').on('click', abrirExclusaoLote);
         $('#sel-cor').on('click', abrirCorLote);
+        $('#sel-exportar').on('click', exportarSelecao);
+        // Exportar KMZ (aba Ajustes)
+        $('#exp-abrir').on('click', abrirExportar);
+        $('.exp-tipo, #exp-todas').on('change', contarExportacao);
+        $('#exp-todos').on('click', function () {
+            $('.exp-tipo').prop('checked', $('.exp-tipo:not(:checked)').length > 0);
+            contarExportacao();
+        });
+        $('#exp-baixar').on('click', function () {
+            baixarKmz(dadosExportacao(), $(this), function () { $('#modal-exportar').hide(); });
+        });
+        $('#exp-cancelar, #exp-fechar').on('click', function () { $('#modal-exportar').hide(); });
         // A paleta daqui é só deste modal: o stopPropagation impede que o handler geral das
         // .ftth-cor (o do cadastro de ponto) mexa na cor escolhida lá.
-        $('#lc-cores').on('click', '.ftth-cor', function (e) {
+        $('#lc-cores, #lc-cores-cabo').on('click', '.ftth-cor', function (e) {
             e.stopPropagation();
-            $('#lc-cores .ftth-cor').removeClass('ativo');
+            $(e.delegateTarget).find('.ftth-cor').removeClass('ativo');
             $(this).addClass('ativo');
             $('#lc-aplicar').prop('disabled', false);
         });
@@ -3264,15 +3489,17 @@
 
         $('.cam').on('change', function () {
             camadas[this.value] = this.checked;
-            atualizarContaCamadas();
-            carregar();
-            // Grava na hora: fechar a página ou fazer logoff não pode devolver a camada.
-            FTTH.chamar({
-                url: 'mapa.php?ajax=camadas',
-                method: 'POST',
-                data: { csrf: (window.FTTH_MAPA || {}).csrf, camadas: JSON.stringify(camadas) },
-                onErro: function (m) { FTTH.toast('erro', 'A camada não foi gravada: ' + m); }
+            camadasMudaram();
+        });
+        // Marcar/Desmarcar todos: uma gravação e um redesenho só, não um por camada.
+        $('#cam-todas').on('click', function (e) {
+            e.stopPropagation();   // o menu de camadas fecha com clique fora dele
+            var marcar = $('.cam:not(:checked)').length > 0;
+            $('.cam').each(function () {
+                this.checked = marcar;
+                camadas[this.value] = marcar;
             });
+            camadasMudaram();
         });
 
         // O menu de camadas fica aberto enquanto se marcam várias de uma vez; fecha ao

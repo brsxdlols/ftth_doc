@@ -107,6 +107,22 @@ T::igual('a porta ficou verde', 'ok', InsidePlant::portas($dio)[0]['status']);
 T::certo('e a saída sabe para onde vai',
     strpos(InsidePlant::portas($dio)[0]['saida']['rotulo'], 'T.POP.CEO') !== false,
     json_encode(InsidePlant::portas($dio)[0]['saida']));
+
+// Cores (01/10/2026): o técnico acha a fibra pela cor do tubo e da fibra. Monotubo não
+// mostra tubo; no 72 FO (6x12) a Fo14 é a 2ª fibra do 2º tubo — Amarelo / Amarelo (ABNT).
+$saidaP01 = InsidePlant::portas($dio)[0]['saida'];
+T::igual('a saída traz a cor da fibra', ['Verde', false],
+    [$saidaP01['cor_nome'] ?? null, $saidaP01['multitubo'] ?? null]);
+$tipo72 = (int) Db::valor('SELECT id FROM tab_ftth_cabo_tipo WHERE rotulo = "72 FO MULT (6x12)"');
+$pop2 = (int) Caixa::criar($regiao, 'DC', 'T.POP.02', '#1E40AF', -24.8620, -52.2100, 'teste')->data['id'];
+$r72 = Cabo::criar($regiao, ['cabo_tipo_id' => $tipo72, 'padrao_cores' => 'ABNT'],
+    [['tipo' => 'CAIXA', 'id' => $pop2], ['tipo' => 'CAIXA', 'id' => $ceo]], 'teste');
+T::certo('cria um 72 FO saindo do segundo POP', $r72->ok, json_encode($r72->errors));
+$fo14 = array_values(array_filter(InsidePlant::saidasDisponiveis($pop2),
+    static fn($s) => $s['numero'] === 14))[0] ?? [];
+T::igual('Fo14 do 72 FO: tubo 2 Amarelo, fibra Amarelo, multitubo',
+    [2, 'Amarelo', 'Amarelo', true],
+    [$fo14['tubo'] ?? null, $fo14['cor_tubo_nome'] ?? null, $fo14['cor_nome'] ?? null, $fo14['multitubo'] ?? null]);
 T::igual('a fibra 1 saiu da lista de livres', 'conectada',
     Topologia::fibrasDoVao($vaoPop, $pop)[0]['estado']);
 T::igual('nenhuma invariante violada', [], Topologia::invariantes($pop));

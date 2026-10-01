@@ -178,7 +178,7 @@ include('nav/header.php');
         <div id="saida"></div>
     </div>
 
-    <div id="lista-olts"></div>
+    <div id="lista-olts" class="ftth-olts"></div>
     <div id="lista-dios"></div>
 
 
@@ -329,6 +329,7 @@ var FABRICANTES = <?= json_encode(InsidePlant::FABRICANTES, JSON_UNESCAPED_UNICO
 
             <div class="ftth-rotulo-campo">Saída para a rua (OSP)</div>
             <select class="ftth-campo" id="porta-saida"></select>
+            <div class="ftth-porta-saida-cor" id="porta-saida-cor"></div>
             <p class="ftth-sub">
                 Escolher aqui liga a porta à fibra de verdade — é a mesma ligação que o
                 diagrama cria, no mesmo grafo.

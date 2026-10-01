@@ -511,7 +511,7 @@ final class InsidePlant
         }
 
         $vao = Db::um(
-            'SELECT v.id, v.caixa_ini_id, v.caixa_fim_id, cb.padrao_cores, t.fibras_por_tubo
+            'SELECT v.id, v.caixa_ini_id, v.caixa_fim_id, cb.padrao_cores, t.fibras, t.fibras_por_tubo
                FROM tab_ftth_cabo_vao v
                JOIN tab_ftth_cabo cb     ON cb.id = v.cabo_id
                JOIN tab_ftth_cabo_tipo t ON t.id = cb.cabo_tipo_id
@@ -532,8 +532,27 @@ final class InsidePlant
             'numero'     => (int) $outra['numero'],
             'sentido'    => 'ST ' . $nome,
             'rotulo'     => 'ST ' . $nome . ' - ' . $fibra['rotulo'],
-            'cor'        => $fibra['cor'],
-            'cor_nome'   => $fibra['cor_nome'],
+        ] + self::coresDaFibra($fibra, (string) $vao['padrao_cores'], (int) $vao['fibras'],
+                               (int) $vao['fibras_por_tubo']);
+    }
+
+    /**
+     * As cores que o técnico procura na bandeja: a da fibra e, em cabo multitubo, a do
+     * tubo. Em monotubo o tubo não diz nada (é sempre o 1), então `multitubo` é falso e a
+     * tela mostra só a fibra.
+     */
+    private static function coresDaFibra(array $fibra, string $padrao, int $fibras, int $porTubo): array
+    {
+        $tubo = Fibra::corTubo((int) $fibra['tubo'], $padrao);
+        return [
+            'cor'           => $fibra['cor'],
+            'cor_nome'      => $fibra['cor_nome'],
+            'contorno'      => $fibra['contorno'],
+            'tubo'          => (int) $fibra['tubo'],
+            'cor_tubo'      => $tubo['hex'],
+            'cor_tubo_nome' => $tubo['nome'],
+            'contorno_tubo' => $tubo['contorno'],
+            'multitubo'     => $porTubo > 0 && $fibras > $porTubo,
         ];
     }
 
@@ -597,9 +616,10 @@ final class InsidePlant
     {
         $opcoes = [];
         foreach (Db::todos(
-            'SELECT v.id, v.caixa_ini_id, v.caixa_fim_id
+            'SELECT v.id, v.caixa_ini_id, v.caixa_fim_id, cb.padrao_cores, t.fibras, t.fibras_por_tubo
                FROM tab_ftth_cabo_vao v
-               JOIN tab_ftth_cabo cb ON cb.id = v.cabo_id
+               JOIN tab_ftth_cabo cb     ON cb.id = v.cabo_id
+               JOIN tab_ftth_cabo_tipo t ON t.id = cb.cabo_tipo_id
               WHERE (v.caixa_ini_id = ? OR v.caixa_fim_id = ?)
                 AND v.excluido_em IS NULL AND cb.excluido_em IS NULL
               ORDER BY v.id', [$caixaId, $caixaId]) as $v) {
@@ -613,9 +633,9 @@ final class InsidePlant
                     'numero'  => $f['numero'],
                     'sentido' => 'ST ' . $nome,
                     'rotulo'  => $f['rotulo'] . ' — ST ' . $nome,
-                    'cor'     => $f['cor'],
                     'estado'  => $f['estado'],
-                ];
+                ] + self::coresDaFibra($f, (string) $v['padrao_cores'], (int) $v['fibras'],
+                                       (int) $v['fibras_por_tubo']);
             }
         }
         return $opcoes;

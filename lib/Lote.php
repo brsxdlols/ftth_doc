@@ -14,7 +14,10 @@
  *    existir, e uma ponta pendurada quebraria as invariantes da caixa vizinha;
  *  - cliente ligado em porta não bloqueia, mas exige confirmação digitada ("EXCLUIR"); ele é
  *    desvinculado pelo mesmo serviço da tela de clientes, que limpa o espelho nativo;
- *  - DC/POP nunca entra no lote: carrega OLT e DIO, e apagá-lo é decisão de uma caixa só.
+ *  - DC/POP nunca entra no lote: carrega OLT e DIO, e apagá-lo é decisão de uma caixa só;
+ *  - a área só pega os tipos das camadas visíveis no mapa (01/10/2026): a camada desligada
+ *    escondia o ponto da tela, mas a seleção pegava ele junto, e a Cor pintou CEO, POP e
+ *    postes em produção quando só a camada CTO estava marcada.
  *
  * A prévia e a exclusão calculam a mesma coisa pelo mesmo método: o que a tela mostrou é o
  * que o banco faz — e o servidor nunca confia na lista que o navegador mandou de volta.
@@ -41,11 +44,17 @@ final class Lote
     private const MAX_CAIXAS   = 2000;
 
     /**
-     * As caixas ativas da região dentro do polígono, com a prévia do que sairia.
+     * As caixas ativas da região dentro do polígono (e os cabos que passam por ele), com a
+     * prévia do que sairia.
      *
-     * @param array $poligono [[lat,lng], ...] na ordem do desenho
+     * @param array      $poligono [[lat,lng], ...] na ordem do desenho
+     * @param array|null $tipos    os tipos das camadas visíveis; null pega todos (tela antiga
+     *                             no cache do navegador), lista vazia não pega nenhum
+     * @param bool       $comCabos camada Cabos ligada: o cabo com qualquer trecho dentro da
+     *                             área entra inteiro (01/10/2026)
      */
-    public static function selecionar(int $regiaoId, array $poligono): Resultado
+    public static function selecionar(int $regiaoId, array $poligono, ?array $tipos = null,
+                                      bool $comCabos = false): Resultado
     {
         $pol = [];
         foreach (array_slice($poligono, 0, self::MAX_VERTICES) as $p) {
@@ -63,31 +72,129 @@ final class Lote
             return Resultado::erro('FTTH-LOTE-003');
         }
 
+        $filtro = '';
+        $params = [];
+        if ($tipos !== null) {
+            // Só tipos conhecidos: o que vem do navegador vira parâmetro, nunca SQL.
+            $tipos = array_values(array_intersect(Caixa::TIPOS, array_map('strval', $tipos)));
+            $filtro = ' AND tipo IN (' . self::marcas($tipos) . ')';
+            $params = $tipos;
+        }
+
         $lats = array_column($pol, 0);
         $lngs = array_column($pol, 1);
         $ids  = [];
-        foreach (Db::todos(
-            'SELECT id, lat, lng FROM tab_ftth_caixa
-              WHERE regiao_id = ? AND excluido_em IS NULL
-                AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?',
-            [$regiaoId, min($lats), max($lats), min($lngs), max($lngs)]) as $c) {
-            if (self::dentro((float) $c['lat'], (float) $c['lng'], $pol)) {
-                $ids[] = (int) $c['id'];
+        if ($tipos === null || $tipos) {
+            foreach (Db::todos(
+                'SELECT id, lat, lng FROM tab_ftth_caixa
+                  WHERE regiao_id = ? AND excluido_em IS NULL
+                    AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?' . $filtro,
+                array_merge([$regiaoId, min($lats), max($lats), min($lngs), max($lngs)], $params)) as $c) {
+                if (self::dentro((float) $c['lat'], (float) $c['lng'], $pol)) {
+                    $ids[] = (int) $c['id'];
+                }
             }
         }
 
-        return Resultado::ok(self::previa($regiaoId, $ids));
+        return Resultado::ok(self::previa($regiaoId, $ids, $comCabos ? self::cabosNaArea($regiaoId, $pol) : []));
     }
 
     /**
-     * O que a exclusão destas caixas levaria junto. Não grava nada.
+     * Os cabos com algum trecho dentro da área. Vale o SEGMENTO, não o vértice: um vão reto de
+     * 300 m que atravessa a área sem vértice nenhum dentro dela também entra (a armadilha do
+     * "filtrar por vértice" já aconteceu duas vezes no addon).
      *
-     * @return array{caixas:array, protegidas:array, vaos:int[], cabos:array, reservas:int[],
-     *               ligacoes:int[], ligacoes_fora:array, splitters:int[], clientes:array,
-     *               resumo:array}
+     * @return int[]
      */
-    public static function previa(int $regiaoId, array $caixaIds): array
+    private static function cabosNaArea(int $regiaoId, array $pol): array
     {
+        $lats = array_column($pol, 0);
+        $lngs = array_column($pol, 1);
+        [$aLat0, $aLat1, $aLng0, $aLng1] = [min($lats), max($lats), min($lngs), max($lngs)];
+        $arestas = [];
+        foreach ($pol as $i => $p) {
+            $arestas[] = [$p, $pol[($i + 1) % count($pol)]];
+        }
+
+        $cabos = [];
+        foreach (Db::todos(
+            'SELECT v.cabo_id, v.vertices FROM tab_ftth_cabo_vao v
+               JOIN tab_ftth_cabo c ON c.id = v.cabo_id AND c.excluido_em IS NULL
+              WHERE v.regiao_id = ? AND v.excluido_em IS NULL', [$regiaoId]) as $v) {
+            $caboId = (int) $v['cabo_id'];
+            if (isset($cabos[$caboId])) {
+                continue;
+            }
+            $pts = [];
+            foreach ((array) json_decode((string) $v['vertices'], true) as $p) {
+                if (is_array($p) && isset($p[0], $p[1]) && is_numeric($p[0]) && is_numeric($p[1])) {
+                    $pts[] = [(float) $p[0], (float) $p[1]];
+                }
+            }
+            if (!$pts) {
+                continue;
+            }
+            // Moldura do vão fora da moldura da área: não tem como cruzar.
+            $vLats = array_column($pts, 0);
+            $vLngs = array_column($pts, 1);
+            if (max($vLats) < $aLat0 || min($vLats) > $aLat1 || max($vLngs) < $aLng0 || min($vLngs) > $aLng1) {
+                continue;
+            }
+            if (self::dentro($pts[0][0], $pts[0][1], $pol)) {
+                $cabos[$caboId] = true;
+                continue;
+            }
+            // Começa fora: só entra se algum segmento cruza a borda.
+            for ($i = 1, $n = count($pts); $i < $n && !isset($cabos[$caboId]); $i++) {
+                foreach ($arestas as [$a, $b]) {
+                    if (self::cruzam($pts[$i - 1], $pts[$i], $a, $b)) {
+                        $cabos[$caboId] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return array_keys($cabos);
+    }
+
+    /** Os segmentos p1–p2 e q1–q2 se cruzam (plano lat/lng, como o dentro()). */
+    private static function cruzam(array $p1, array $p2, array $q1, array $q2): bool
+    {
+        $lado = static fn(array $a, array $b, array $c): float =>
+            ($b[1] - $a[1]) * ($c[0] - $a[0]) - ($b[0] - $a[0]) * ($c[1] - $a[1]);
+        $d1 = $lado($q1, $q2, $p1);
+        $d2 = $lado($q1, $q2, $p2);
+        $d3 = $lado($p1, $p2, $q1);
+        $d4 = $lado($p1, $p2, $q2);
+        return (($d1 > 0) !== ($d2 > 0)) && (($d3 > 0) !== ($d4 > 0));
+    }
+
+    /**
+     * O que a exclusão destas caixas e destes cabos levaria junto. Não grava nada.
+     *
+     * O cabo selecionado sai inteiro, como no Excluir da ficha: todos os vãos dele entram na
+     * lista de vãos que saem, e o resto (fusões, reservas, ponta livre) segue a mesma conta
+     * dos vãos que saem com as caixas.
+     *
+     * @return array{caixas:array, protegidas:array, cabos_sel:array, vaos:int[], cabos:array,
+     *               reservas:int[], ligacoes:int[], ligacoes_fora:array, splitters:int[],
+     *               clientes:array, resumo:array}
+     */
+    public static function previa(int $regiaoId, array $caixaIds, array $caboIds = []): array
+    {
+        $caboIds = array_values(array_unique(array_filter(array_map('intval', $caboIds))));
+        $caboIds = array_slice($caboIds, 0, self::MAX_CAIXAS);
+        $cabosSel = [];
+        if ($caboIds) {
+            foreach (Db::todos(
+                'SELECT id, nome, cor_rota FROM tab_ftth_cabo
+                  WHERE regiao_id = ? AND excluido_em IS NULL AND id IN (' . self::marcas($caboIds) . ')
+                  ORDER BY nome, id',
+                array_merge([$regiaoId], $caboIds)) as $c) {
+                $cabosSel[] = ['id' => (int) $c['id'], 'nome' => $c['nome'], 'cor_rota' => $c['cor_rota']];
+            }
+        }
+
         $caixaIds = array_values(array_unique(array_filter(array_map('intval', $caixaIds))));
         $caixaIds = array_slice($caixaIds, 0, self::MAX_CAIXAS);
 
@@ -110,7 +217,7 @@ final class Lote
         }
         $ids = array_column($caixas, 'id');
 
-        // Vãos: os que encostam numa caixa que sai.
+        // Vãos: os que encostam numa caixa que sai, e todos os dos cabos selecionados.
         $vaos = [];
         if ($ids) {
             $m = self::marcas($ids);
@@ -118,9 +225,18 @@ final class Lote
                 "SELECT id FROM tab_ftth_cabo_vao
                   WHERE excluido_em IS NULL AND (caixa_ini_id IN ($m) OR caixa_fim_id IN ($m))",
                 array_merge($ids, $ids)) as $v) {
-                $vaos[] = (int) $v['id'];
+                $vaos[(int) $v['id']] = true;
             }
         }
+        if ($cabosSel) {
+            $selIds = array_column($cabosSel, 'id');
+            foreach (Db::todos(
+                'SELECT id FROM tab_ftth_cabo_vao
+                  WHERE excluido_em IS NULL AND cabo_id IN (' . self::marcas($selIds) . ')', $selIds) as $v) {
+                $vaos[(int) $v['id']] = true;
+            }
+        }
+        $vaos = array_keys($vaos);
 
         // Reservas: as dos vãos que saem vão junto (são o próprio cabo enrolado); as que
         // foram selecionadas direto já estão em $caixas.
@@ -196,6 +312,7 @@ final class Lote
         return [
             'caixas'        => $caixas,
             'protegidas'    => $protegidas,
+            'cabos_sel'     => $cabosSel,
             'vaos'          => $vaos,
             'cabos'         => $cabos,
             'reservas'      => $reservas,
@@ -207,6 +324,7 @@ final class Lote
                 'caixas'          => count($caixas),
                 'por_tipo'        => $porTipo,
                 'protegidas'      => count($protegidas),
+                'cabos_sel'       => count($cabosSel),
                 'vaos'            => count($vaos),
                 'cabos_excluidos' => count(array_filter($cabos, static fn($c) => $c['destino'] === 'excluir')),
                 'cabos_partidos'  => count(array_filter($cabos, static fn($c) => $c['destino'] === 'partir')),
@@ -223,12 +341,13 @@ final class Lote
     /**
      * Exclui as caixas e tudo o que depende delas, numa transação só.
      *
-     * A lista é recalculada aqui: a tela manda só os ids das caixas.
+     * A lista é recalculada aqui: a tela manda só os ids das caixas e dos cabos.
      */
-    public static function excluir(int $regiaoId, array $caixaIds, string $confirmacao, string $usuario): Resultado
+    public static function excluir(int $regiaoId, array $caixaIds, string $confirmacao, string $usuario,
+                                   array $caboIds = []): Resultado
     {
-        $p = self::previa($regiaoId, $caixaIds);
-        if (!$p['caixas']) {
+        $p = self::previa($regiaoId, $caixaIds, $caboIds);
+        if (!$p['caixas'] && !$p['cabos_sel']) {
             return Resultado::erro('FTTH-LOTE-001', ['protegidas' => count($p['protegidas'])],
                 $p['protegidas']
                     ? 'A seleção só tem DC/POP, que não é excluído em lote. Exclua-o pela ficha.'
@@ -351,6 +470,59 @@ final class Lote
                          array_merge([$cor], $alvos));
                 Auditoria::registrar('regiao', $regiaoId, 'cor_lote', null,
                     ['cor' => $cor, 'caixas' => $alvos], $regiaoId);
+            }
+            return Resultado::ok(['alterados' => count($alvos), 'cor' => $cor]);
+        });
+    }
+
+    /**
+     * O Aplicar do modal de Cor: pontos e/ou cabos, cada um com a sua paleta, numa transação.
+     * Lado sem cor escolhida fica como está. As recusas (cor inválida) vêm antes de gravar.
+     */
+    public static function pintar(int $regiaoId, array $caixaIds, string $cor, array $caboIds,
+                                  string $corCabo, string $usuario): Resultado
+    {
+        $pontos = $caixaIds && $cor !== '';
+        $cabos  = $caboIds && $corCabo !== '';
+        if (!$pontos && !$cabos) {
+            return Resultado::erro('FTTH-LOTE-001');
+        }
+        foreach (array_filter([$pontos ? $cor : null, $cabos ? $corCabo : null]) as $c) {
+            if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $c)) {
+                return Resultado::erro('FTTH-SYS-002', ['cor' => $c], 'Cor inválida.');
+            }
+        }
+        return Db::transacao(function () use ($regiaoId, $caixaIds, $cor, $caboIds, $corCabo, $usuario, $pontos, $cabos) {
+            $p = $pontos ? (self::mudarCor($regiaoId, $caixaIds, $cor, $usuario)->data['alterados'] ?? 0) : 0;
+            $c = $cabos ? (self::mudarCorCabos($regiaoId, $caboIds, $corCabo, $usuario)->data['alterados'] ?? 0) : 0;
+            return Resultado::ok(['alterados' => $p, 'cabos_alterados' => $c]);
+        });
+    }
+
+    /** Troca a cor de rota dos cabos selecionados (o cabo tem uma cor só, para todos os vãos). */
+    public static function mudarCorCabos(int $regiaoId, array $caboIds, string $cor, string $usuario): Resultado
+    {
+        if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $cor)) {
+            return Resultado::erro('FTTH-SYS-002', ['cor' => $cor], 'Cor inválida.');
+        }
+        $ids = array_slice(array_values(array_unique(array_filter(array_map('intval', $caboIds)))), 0, self::MAX_CAIXAS);
+        if (!$ids) {
+            return Resultado::erro('FTTH-LOTE-001');
+        }
+        $cor = strtoupper($cor);
+        return Db::transacao(function () use ($regiaoId, $ids, $cor, $usuario) {
+            $alvos = array_map('intval', array_column(Db::todos(
+                'SELECT id FROM tab_ftth_cabo
+                  WHERE regiao_id = ? AND excluido_em IS NULL AND id IN (' . self::marcas($ids) . ')',
+                array_merge([$regiaoId], $ids)), 'id'));
+            foreach ($alvos as $id) {
+                Versao::avancar('cabo', $id, null, $usuario);
+            }
+            if ($alvos) {
+                Db::exec('UPDATE tab_ftth_cabo SET cor_rota = ? WHERE id IN (' . self::marcas($alvos) . ')',
+                         array_merge([$cor], $alvos));
+                Auditoria::registrar('regiao', $regiaoId, 'cor_lote_cabos', null,
+                    ['cor' => $cor, 'cabos' => $alvos], $regiaoId);
             }
             return Resultado::ok(['alterados' => count($alvos), 'cor' => $cor]);
         });

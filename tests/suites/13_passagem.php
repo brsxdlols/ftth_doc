@@ -194,6 +194,28 @@ T::igual('e como as bitolas diferem, é FUSAO', 6,
     (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_ligacao WHERE caixa_id = ? AND tipo = "FUSAO"',
                     [$leste2]));
 
+// Derivação (01/10/2026): o 12 FO já entregou Fo01–Fo06 ao primeiro 6 FO; um segundo 6 FO
+// tem de continuar do Fo07 — antes casava Fo01 com Fo01, achava ocupado e não ligava nada.
+$ramal = (int) Caixa::criar($regiao, 'CTO', 'T.PS.RAMAL', '#FF9100', -24.8940, -52.2310, 'teste')->data['id'];
+$cSeis2 = Cabo::criar($regiao, ['cabo_tipo_id' => $t6, 'nome' => 'PS LOTE 6B'],
+    [['tipo' => 'CAIXA', 'id' => $leste2], ['tipo' => 'CAIXA', 'id' => $ramal]], 'teste');
+$vSeis2 = (int) $cSeis2->data['vaos'][0];
+$sim = Topologia::ligarCabos($leste2, $vLote, $vSeis2, false, 'teste');
+T::igual('capacidades diferentes: casa as livres em sequência', 'sequencia', $sim->data['modo'] ?? null);
+T::igual('o segundo 6 FO recebe as 6 que sobraram', 6, $sim->data['ligadas']);
+T::igual('Fo07 do 12 FO vai no Fo01 do 6 FO', [7, 1],
+    [$sim->data['pares'][0]['numero'] ?? null, $sim->data['pares'][0]['numero_b'] ?? null]);
+$r = Topologia::ligarCabos($leste2, $vLote, $vSeis2, true, 'teste');
+T::igual('aplica as 6', 6, $r->data['ligadas']);
+T::igual('Fo12 casou com Fo06 no banco', 1,
+    (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_ligacao l
+                       JOIN tab_ftth_ligacao_ponta pa ON pa.ligacao_id = l.id AND pa.elemento_id = ? AND pa.numero = 12
+                       JOIN tab_ftth_ligacao_ponta pb ON pb.ligacao_id = l.id AND pb.elemento_id = ? AND pb.numero = 6
+                      WHERE l.caixa_id = ?', [$vLote, $vSeis2, $leste2]));
+T::igual('sem fibra livre no 12 FO, nada a ligar', 0,
+    Topologia::ligarCabos($leste2, $vLote, $vSeis2, false, 'teste')->data['ligadas']);
+T::igual('invariantes limpas depois da derivação', [], Topologia::invariantes($leste2));
+
 T::igual('recusa ligar um cabo nele mesmo', 'FTTH-SYS-002',
     Topologia::ligarCabos($leste, $vL, $vL, false, 'teste')->primeiroCodigo());
 T::igual('recusa cabo que não encosta na caixa', 'FTTH-TOP-002',

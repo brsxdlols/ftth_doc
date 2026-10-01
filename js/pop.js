@@ -20,6 +20,34 @@
                     esc(texto).replace(/\n/g, '<br>') + '</div>');
     }
 
+    /*
+     * Cor do tubo e da fibra: é o que o técnico procura na bandeja, não o número. Quadradinho
+     * é o tubo (só em multitubo: em monotubo o tubo é sempre o 1 e não diz nada), bolinha é a
+     * fibra. Cor clara ganha o contorno do catálogo (Fibra::CORES) para não sumir no branco.
+     */
+    function marcasCor(s) {
+        if (!s || !s.cor) return '';
+        var marca = function (hex, contorno, classe) {
+            return '<i class="ftth-fibra-cor' + classe + '" style="background:' + esc(hex)
+                 + ';border-color:' + esc(contorno || hex) + '"></i>';
+        };
+        return (s.multitubo ? marca(s.cor_tubo, s.contorno_tubo, ' ftth-fibra-cor--tubo') : '')
+             + marca(s.cor, s.contorno, '');
+    }
+
+    function nomesCor(s, curto) {
+        if (!s || !s.cor_nome) return '';
+        if (curto) return (s.multitubo ? 'T' + s.tubo + ' ' + s.cor_tubo_nome + ' / ' : '') + s.cor_nome;
+        return (s.multitubo ? 'Tubo ' + s.tubo + ' ' + s.cor_tubo_nome + ' · ' : '') + 'Fibra ' + s.cor_nome;
+    }
+
+    /** A amostra abaixo do seletor de saída acompanha a opção escolhida. */
+    function amostraSaida() {
+        var i = $('#porta-saida option:selected').data('i');
+        var s = i === undefined ? null : estado.saidas[i];
+        $('#porta-saida-cor').html(s ? marcasCor(s) + ' ' + esc(nomesCor(s)) : '');
+    }
+
     /* ------------------------------------------------------------------ carga */
 
     function carregar(aoTerminar) {
@@ -159,12 +187,14 @@
                  +  '<div class="ftth-portas-rolagem"><div class="ftth-portas">';
 
             d.portas_lista.forEach(function (p) {
-                html += '<button class="ftth-porta ftth-porta--' + p.status + ' js-porta" data-id="' + p.id + '">'
+                html += '<button class="ftth-porta ftth-porta--' + p.status + ' js-porta" data-id="' + p.id + '"'
+                     +  (p.saida && p.saida.cor_nome
+                            ? ' title="' + esc(p.saida.rotulo + ' · ' + nomesCor(p.saida)) + '"' : '') + '>'
                      +  '<span class="ftth-porta-topo">' + esc(p.rotulo) + '<i class="ftth-porta-luz"></i></span>'
                      +  '<span class="ftth-porta-linha">' + (p.olt_apelido
                             ? esc(p.olt_apelido) + (p.pon ? ' · ' + esc(p.pon) : '') : '—') + '</span>'
                      +  '<span class="ftth-porta-linha">' + (p.servico ? esc(p.servico) : '—') + '</span>'
-                     +  '<span class="ftth-porta-linha">' + (p.saida ? esc(p.saida.rotulo) : '—') + '</span>'
+                     +  '<span class="ftth-porta-linha">' + (p.saida ? marcasCor(p.saida) + esc(p.saida.rotulo) : '—') + '</span>'
                      +  '</button>';
             });
 
@@ -208,14 +238,17 @@
 
         // Saída OSP: fibras livres mais a que esta porta já usa.
         var saidas = '<option value="|">— sem saída —</option>';
-        estado.saidas.forEach(function (s) {
+        estado.saidas.forEach(function (s, i) {
             var atual = p.saida && parseInt(p.saida.vao_id, 10) === parseInt(s.vao_id, 10)
                         && parseInt(p.saida.numero, 10) === parseInt(s.numero, 10);
             if (s.estado !== 'livre' && !atual) return;   // ocupada por outra ponta
-            saidas += '<option value="' + s.vao_id + '|' + s.numero + '"' + (atual ? ' selected' : '') + '>'
-                    + esc(s.rotulo) + '</option>';
+            // <option> não aceita cor: o nome vai no texto, e a amostra colorida fica abaixo.
+            saidas += '<option value="' + s.vao_id + '|' + s.numero + '"' + (atual ? ' selected' : '')
+                    + ' data-i="' + i + '">'
+                    + esc(s.rotulo) + (s.cor_nome ? ' · ' + esc(nomesCor(s, true)) : '') + '</option>';
         });
         $('#porta-saida').html(saidas);
+        amostraSaida();
 
         $('#porta-titulo').text('Porta ' + p.rotulo);
         $('#porta-operacao').val(p.operacao);
@@ -300,6 +333,7 @@
             estado.placas.splice(parseInt($(this).attr('data-i'), 10), 1);
             desenharPlacas();
         });
+        $('#porta-saida').on('change', amostraSaida);
         $(document).on('change', '.js-placa', function () {
             var i = parseInt($(this).attr('data-i'), 10);
             var campo = $(this).attr('data-campo');

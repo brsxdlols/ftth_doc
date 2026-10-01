@@ -75,7 +75,13 @@ final class Kmz
         foreach ($xml->xpath('//*[local-name()="Placemark"]') ?: [] as $pm) {
             $nome = trim((string) $pm->name);
             $desc = trim((string) $pm->description);
-            $cor  = self::corDoIcone((string) ($pm->Style->IconStyle->Icon->href ?? ''))
+            // Arquivo exportado pelo próprio addon (KmzExport): o ExtendedData traz tipo, cor e
+            // o rótulo exato do cabo, e vale antes de qualquer adivinhação (01/10/2026).
+            $ext  = self::extendido($pm);
+            $cor  = (isset($ext['ftth_cor']) && preg_match('/^#[0-9A-Fa-f]{6}$/', $ext['ftth_cor'])
+                        ? strtoupper($ext['ftth_cor']) : null)
+                 ?? self::corDoIcone((string) ($pm->Style->IconStyle->Icon->href ?? ''))
+                 ?? self::corDaLinha((string) ($pm->Style->IconStyle->color ?? ''))
                  ?? self::corDaLinha((string) ($pm->Style->LineStyle->color ?? ''));
 
             $ponto = $pm->xpath('.//*[local-name()="Point"]/*[local-name()="coordinates"]');
@@ -92,8 +98,10 @@ final class Kmz
                 // A pasta e o documento também dizem o tipo: exportações agrupam os postes numa
                 // pasta "Postes", ou o arquivo inteiro é de postes, sem descrição nos pontos.
                 $pasta = $pm->xpath('ancestor::*[local-name()="Folder"][1]/*[local-name()="name"]');
-                $tipo = $tipoForcado ?? self::tipoDaDescricao($desc, $nome,
-                    [$pasta ? (string) $pasta[0] : '', $documento]);
+                $tipoExt = strtoupper((string) ($ext['ftth_tipo'] ?? ''));
+                $tipo = $tipoForcado
+                     ?? (in_array($tipoExt, Caixa::TIPOS, true) && $tipoExt !== 'PONTA' ? $tipoExt : null)
+                     ?? self::tipoDaDescricao($desc, $nome, [$pasta ? (string) $pasta[0] : '', $documento]);
                 $itens[] = [
                     'tipo_sugerido' => 'CAIXA',
                     'subtipo'       => $tipo,
@@ -115,10 +123,12 @@ final class Kmz
                 if ($metros < 1.0) {
                     $alertas[] = ['code' => 'FTTH-GEO-004', 'message' => 'Vão com menos de 1 metro.'];
                 }
+                $nomeCabo = array_key_exists('ftth_cabo', $ext) ? trim($ext['ftth_cabo']) : $nome;
                 $itens[] = [
                     'tipo_sugerido' => 'VAO',
-                    'subtipo'       => self::rotuloCabo($nome),
-                    'nome'          => $nome !== '' ? $nome : null,
+                    'subtipo'       => (trim($ext['ftth_cabo_tipo'] ?? '') ?: null)
+                                    ?? self::rotuloCabo($nome) ?? self::rotuloCabo($desc),
+                    'nome'          => $nomeCabo !== '' ? $nomeCabo : null,
                     'cor'           => $cor ?? '#00E676',
                     'geometria'     => $coords,
                     'metros'        => round($metros, 2),
@@ -387,6 +397,17 @@ final class Kmz
             }
         }
         return 'CTO';
+    }
+
+    /** <ExtendedData><Data name="x"><value>…</value></Data> -> ['x' => '…']. */
+    private static function extendido(SimpleXMLElement $pm): array
+    {
+        $saida = [];
+        foreach ($pm->xpath('./*[local-name()="ExtendedData"]/*[local-name()="Data"]') ?: [] as $d) {
+            $valor = $d->xpath('./*[local-name()="value"]');
+            $saida[(string) $d['name']] = $valor ? (string) $valor[0] : '';
+        }
+        return $saida;
     }
 
     /** "Cabo 6FO" -> "6 FO" (rótulo do catálogo tab_ftth_cabo_tipo). */

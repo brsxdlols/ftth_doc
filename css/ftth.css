@@ -276,6 +276,12 @@ a.ftth-kpi:hover  { border-color: var(--ftth-azul-claro); background: #fff; }
 .ftth-gaveta-acao i { margin: 0; }
 .ftth-gaveta-secao  { font-size: 10.5px; font-weight: 600; text-transform: uppercase;
                       letter-spacing: .05em; color: var(--ftth-cinza); margin: 4px 4px 6px; }
+/* Título com ação à direita (Marcar/Desmarcar todos das Camadas). */
+.ftth-gaveta-secao--acao { display: flex; align-items: center; justify-content: space-between; }
+.ftth-gaveta-secao--acao button { background: none; border: 0; padding: 0; cursor: pointer;
+                      font: inherit; letter-spacing: inherit; text-transform: inherit;
+                      color: var(--ftth-azul-claro); }
+.ftth-gaveta-secao--acao button:hover { text-decoration: underline; }
 .ftth-gaveta-opcao  { display: block; padding: 8px; border-radius: 5px; font-size: 13px;
                       cursor: pointer; color: var(--ftth-texto); }
 .ftth-gaveta-opcao:hover { background: var(--ftth-fundo); }
@@ -356,7 +362,7 @@ a.ftth-kpi:hover  { border-color: var(--ftth-azul-claro); background: #fff; }
 .ftth-estado-dados dt { color: var(--ftth-cinza); }
 .ftth-estado-dados dd { margin: 0; font-family: Consolas, "Courier New", monospace; text-align: right; }
 /* Quem desenvolve, no pé da aba Ajustes: discreto, mas com o WhatsApp a um clique. */
-.ftth-autor         { display: flex; flex-direction: column; gap: 1px; font-size: 12px;
+.ftth-autor         { display: flex; align-items: center; gap: 6px; font-size: 12px;
                       line-height: 1.4; padding: 7px 10px; color: var(--ftth-cinza); }
 .ftth-autor strong  { color: var(--ftth-azul); font-weight: 600; }
 /* Resultado do "Verificar atualização" no rodapé do Estado do banco. */
@@ -365,10 +371,8 @@ a.ftth-kpi:hover  { border-color: var(--ftth-azul-claro); background: #fff; }
 .ftth-estado-ok     { color: var(--ftth-verde); font-weight: 600; }
 .ftth-estado-novo   { color: var(--ftth-azul); }
 .ftth-estado-novo i { color: var(--ftth-amarelo); margin-right: 3px; }
-.ftth-autor a       { color: var(--ftth-verde); font-weight: 600; text-decoration: none;
-                      align-self: flex-start; }
-.ftth-autor a:hover { text-decoration: underline; }
-.ftth-autor a i     { margin-right: 3px; }
+.ftth-autor a       { color: var(--ftth-verde); text-decoration: none; font-size: 15px; line-height: 1; }
+.ftth-autor a:hover { opacity: .8; }
 .ftth-estado-cmd    { display: flex; align-items: center; gap: 6px; }
 .ftth-estado-cmd code { flex: 1; min-width: 0; font-size: 10.5px; background: #fff;
                         border: 1px solid var(--ftth-borda); border-radius: 4px; padding: 4px 6px;
@@ -559,6 +563,10 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
    e o .row do grid-utilities nao serve porque nao tem col-md-*. */
 .ftth-pop-acoes    { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .ftth-card--olt    { border-left: 4px solid var(--ftth-azul-claro); }
+/* OLTs lado a lado, em cartões de largura fixa; em tela estreita cada um ocupa a linha. */
+.ftth-olts         { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; }
+.ftth-olts:empty   { display: none; }
+.ftth-olts .ftth-card--olt { flex: 0 0 340px; max-width: 100%; margin-bottom: 0; }
 
 /* Doze portas por linha: e como o DIO e numerado na parede, e e assim que o tecnico conta
    (P01..P12, P13..P24). As colunas esticam com a tela ate o limite, e quando a largura nao da
@@ -581,6 +589,12 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
 .ftth-porta--ok .ftth-porta-luz      { background: var(--ftth-verde); }
 .ftth-porta--parcial  { border-left-color: var(--ftth-amarelo); }
 .ftth-porta--parcial .ftth-porta-luz { background: var(--ftth-amarelo); }
+/* Cor do tubo (quadradinho) e da fibra (bolinha) da saída da porta — discretas, antes do texto. */
+.ftth-fibra-cor       { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+                        border: 1px solid; margin-right: 3px; vertical-align: 0; }
+.ftth-fibra-cor--tubo { border-radius: 2px; }
+.ftth-porta-saida-cor { font-size: 11.5px; color: var(--ftth-cinza); margin: 4px 0 0; }
+.ftth-porta-saida-cor:empty { display: none; }
 
 .ftth-pop-placa    { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
 .ftth-pop-placa label { flex: 1; display: block; }
@@ -940,6 +954,8 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
 #sel-card                             { border: 1px solid rgba(255, 43, 214, .5); }
 .ftth-lote-barra                      { border: 1px solid rgba(255, 43, 214, .5); }
 .ftth-lote-contas i                   { color: #FF6BE4; }
+/* Camada desligada no mapa = tipo fora da seleção. O aviso fica à vista antes do Cor/Excluir. */
+.ftth-flutuante .ftth-sel-filtro      { color: var(--ftth-amarelo); }
 
 /* Quarentena: a coluna Tipo é um select por linha, e o "Mudar tipo para" do lote usa o mesmo.
    Compacto para a linha da tabela não crescer. */

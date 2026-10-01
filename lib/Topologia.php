@@ -695,7 +695,8 @@ final class Topologia
 
     /**
      * Liga dois cabos fibra a fibra, na ordem: Fo01 com Fo01, Fo02 com Fo02, até onde o
-     * menor dos dois alcança.
+     * menor dos dois alcança. Com capacidades diferentes, casa as fibras LIVRES em sequência
+     * (ver o comentário no corpo).
      *
      * É o serviço de um cabo passante numa CEO, que a mão faria em 24 cliques. O tipo de
      * cada ligação sai do `conectar()` de sempre — mesma bitola e mesmo número dá PASSAGEM
@@ -737,54 +738,75 @@ final class Topologia
             return Resultado::erro('FTTH-TOP-002', ['vao' => $fibrasA ? $vaoB : $vaoA]);
         }
 
-        $quantas = min(count($fibrasA), count($fibrasB));
+        // Como as fibras casam (01/10/2026):
+        //  - mesma capacidade é cabo passante: número com número, e a ocupada é pulada —
+        //    deslocar a sequência por causa de UMA sangria estragaria todas as passagens;
+        //  - capacidades diferentes é derivação: as LIVRES de um, em sequência, com as LIVRES
+        //    do outro. O 72 FO que já entregou Fo01–Fo12 a um 12 FO continua do Fo13 no 6 FO
+        //    seguinte — antes casava Fo01 com Fo01, achava tudo ocupado e não ligava nada.
+        $sequencia = count($fibrasA) !== count($fibrasB);
+        $candidatos = [];
         $pares   = [];
         $ligadas = 0;
         $puladas = 0;
 
-        for ($n = 1; $n <= $quantas; $n++) {
-            $a = $fibrasA[$n - 1];
-            $b = $fibrasB[$n - 1];
-
-            $ocupada = null;
-            if ($a['estado'] !== 'livre') {
-                $ocupada = 'a fibra ' . $a['rotulo'] . ' do primeiro cabo já está conectada';
-            } elseif ($b['estado'] !== 'livre') {
-                $ocupada = 'a fibra ' . $b['rotulo'] . ' do segundo cabo já está conectada';
+        if ($sequencia) {
+            $livresA = array_values(array_filter($fibrasA, static fn($f) => $f['estado'] === 'livre'));
+            $livresB = array_values(array_filter($fibrasB, static fn($f) => $f['estado'] === 'livre'));
+            $quantas = min(count($livresA), count($livresB));
+            for ($i = 0; $i < $quantas; $i++) {
+                $candidatos[] = [(int) $livresA[$i]['numero'], (int) $livresB[$i]['numero']];
             }
-            if ($ocupada !== null) {
-                $pares[] = ['numero' => $n, 'estado' => 'pulada', 'motivo' => $ocupada];
-                $puladas++;
-                continue;
+        } else {
+            $quantas = count($fibrasA);
+            for ($n = 1; $n <= $quantas; $n++) {
+                $a = $fibrasA[$n - 1];
+                $b = $fibrasB[$n - 1];
+                $ocupada = null;
+                if ($a['estado'] !== 'livre') {
+                    $ocupada = 'a fibra ' . $a['rotulo'] . ' do primeiro cabo já está conectada';
+                } elseif ($b['estado'] !== 'livre') {
+                    $ocupada = 'a fibra ' . $b['rotulo'] . ' do segundo cabo já está conectada';
+                }
+                if ($ocupada !== null) {
+                    $pares[] = ['numero' => $n, 'numero_b' => $n, 'estado' => 'pulada', 'motivo' => $ocupada];
+                    $puladas++;
+                    continue;
+                }
+                $candidatos[] = [$n, $n];
             }
+        }
 
+        foreach ($candidatos as [$n, $nb]) {
             $pa = ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vaoA, 'numero' => $n];
-            $pb = ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vaoB, 'numero' => $n];
+            $pb = ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vaoB, 'numero' => $nb];
             // "Interligar com fusão" (30/09/2026): o técnico cortou e fundiu de verdade, então
             // nem o par de mesma bitola e mesmo número vira passagem sem perda.
             $tipo = !$comFusao && self::ehPassagem($pa, $pb) ? 'PASSAGEM' : 'FUSAO';
 
             if (!$aplicar) {
-                $pares[] = ['numero' => $n, 'estado' => 'ligar', 'tipo' => $tipo];
+                $pares[] = ['numero' => $n, 'numero_b' => $nb, 'estado' => 'ligar', 'tipo' => $tipo];
                 $ligadas++;
                 continue;
             }
 
             $r = self::conectar($caixaId, $pa, $pb, $comFusao ? 'FUSAO' : null, $usuario);
             if ($r->ok) {
-                $pares[] = ['numero' => $n, 'estado' => 'ligada', 'tipo' => $tipo,
+                $pares[] = ['numero' => $n, 'numero_b' => $nb, 'estado' => 'ligada', 'tipo' => $tipo,
                             'ligacao_id' => (int) $r->data['id']];
                 $ligadas++;
             } else {
                 // Só chega aqui numa corrida com outro usuário: a ocupação já foi checada.
-                $pares[] = ['numero' => $n, 'estado' => 'pulada',
+                $pares[] = ['numero' => $n, 'numero_b' => $nb, 'estado' => 'pulada',
                             'motivo' => $r->primeiraMensagem()];
                 $puladas++;
             }
         }
+        usort($pares, static fn($x, $y) => $x['numero'] <=> $y['numero']);
 
         return Resultado::ok([
             'aplicado' => $aplicar,
+            'modo'     => $sequencia ? 'sequencia' : 'numero',
             'total'    => $quantas,
             'ligadas'  => $ligadas,
             'puladas'  => $puladas,

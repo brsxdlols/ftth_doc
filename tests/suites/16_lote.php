@@ -66,6 +66,20 @@ T::igual('o cliente aparece na prévia', 'lote.cliente', $sel->data['clientes'][
 T::igual('área com menos de 3 cantos é recusada', 'FTTH-LOTE-003',
     Lote::selecionar($regiao, [[-24.95, -52.40], [-24.96, -52.41]])->primeiroCodigo());
 
+// Camadas (01/10/2026): a área pega só os tipos visíveis. Em produção, com só a camada CTO
+// ligada, a Cor pintou as CEOs escondidas. A, B, D e E são CEO; C é a única CTO.
+$todaRota = [[-24.9480, -52.4010], [-24.9480, -52.3950], [-24.9520, -52.3950], [-24.9520, -52.4010]];
+T::igual('só a camada CTO: só C entra', [$cx['C']],
+    array_column(Lote::selecionar($regiao, $todaRota, ['CTO', 'CTO_AP'])->data['caixas'], 'id'));
+T::igual('só a camada CEO: as quatro CEOs, sem C', 4, count(array_diff(
+    array_column(Lote::selecionar($regiao, $todaRota, ['CEO'])->data['caixas'], 'id'), [$cx['C']])));
+T::igual('nenhuma camada ligada: nada entra', [],
+    Lote::selecionar($regiao, $todaRota, [])->data['caixas']);
+T::igual('tipo desconhecido é ignorado, não vira SQL', [],
+    Lote::selecionar($regiao, $todaRota, ["CTO') OR 1=1 -- "])->data['caixas']);
+T::igual('sem a lista de tipos (tela antiga), pega todos', 5,
+    count(Lote::selecionar($regiao, $todaRota)->data['caixas']));
+
 // ------------------------------------------------------------------ exclusão
 T::igual('com cliente, sem confirmar, recusa', 'FTTH-LOTE-002',
     Lote::excluir($regiao, [$cx['C']], '', 'teste')->primeiroCodigo());
@@ -104,3 +118,54 @@ T::igual('nenhum cabo da rota sobrou', 0, (int) Db::valor(
     'SELECT COUNT(*) FROM tab_ftth_cabo WHERE id IN (?, ?) AND excluido_em IS NULL', [$cabo, $caboDE]));
 T::igual('seleção vazia é recusada', 'FTTH-LOTE-001',
     Lote::excluir($regiao, [], '', 'teste')->primeiroCodigo());
+
+// ------------------------------------------------------------------ cabos na área (01/10/2026)
+// Só a camada Cabos ligada: a área no MEIO de um vão reto (nenhum vértice dentro) tem de
+// pegar o cabo inteiro. X ──────── Y em 1 km; W fica longe, com outro cabo.
+$regC = (int) Regiao::criar('Lote cabos', -24.96, -52.41, 15, 'teste')->data['id'];
+$X = (int) Caixa::criar($regC, 'CEO', 'LC.X', '#FF9100', -24.9600, -52.4100, 'teste')->data['id'];
+$Y = (int) Caixa::criar($regC, 'CTO', 'LC.Y', '#FF9100', -24.9600, -52.4000, 'teste')->data['id'];
+$W = (int) Caixa::criar($regC, 'CTO', 'LC.W', '#FF9100', -24.9700, -52.4100, 'teste')->data['id'];
+$rXY = Cabo::criar($regC, ['cabo_tipo_id' => $t12, 'nome' => 'LC.XY'],
+    [['tipo' => 'CAIXA', 'id' => $X], ['tipo' => 'CAIXA', 'id' => $Y]], 'teste');
+$rXW = Cabo::criar($regC, ['cabo_tipo_id' => $t12, 'nome' => 'LC.XW'],
+    [['tipo' => 'CAIXA', 'id' => $X], ['tipo' => 'CAIXA', 'id' => $W]], 'teste');
+T::certo('cria os cabos X–Y e X–W', $rXY->ok && $rXW->ok, json_encode([$rXY->errors, $rXW->errors]));
+$caboXY = (int) $rXY->data['cabo_id'];
+$caboXW = (int) $rXW->data['cabo_id'];
+$vXY = (int) $rXY->data['vaos'][0];
+$splY = (int) Topologia::criarSplitter($Y, ['funcao' => 'ATENDIMENTO', 'razao' => '1:8', 'saidas' => 8], 'teste')->data['id'];
+$ligY = Topologia::conectar($Y, ['elemento' => 'VAO_FIBRA', 'elemento_id' => $vXY, 'numero' => 1],
+    ['elemento' => 'SPLITTER_IN', 'elemento_id' => $splY, 'numero' => 0], 'FUSAO', 'teste');
+T::certo('funde X–Y no splitter de Y', $ligY->ok, json_encode($ligY->errors));
+
+$meio = [[-24.9590, -52.4060], [-24.9590, -52.4040], [-24.9610, -52.4040], [-24.9610, -52.4060]];
+$sc = Lote::selecionar($regC, $meio, [], true);
+T::igual('só Cabos ligada: o cabo que atravessa a área entra', [$caboXY],
+    array_column($sc->data['cabos_sel'], 'id'));
+T::igual('e nenhum ponto', [], $sc->data['caixas']);
+T::igual('com Cabos desligada, a mesma área não pega nada', [],
+    Lote::selecionar($regC, $meio, ['CEO', 'CTO'], false)->data['cabos_sel']);
+T::igual('cabo selecionado sai inteiro na prévia', 'excluir', $sc->data['cabos'][0]['destino'] ?? null);
+T::igual('a fusão de Y entra na prévia', 1, $sc->data['resumo']['ligacoes']);
+
+T::igual('cor inválida não grava', 'FTTH-SYS-002',
+    Lote::pintar($regC, [], '', [$caboXY], 'verde', 'teste')->primeiroCodigo());
+$pc = Lote::pintar($regC, [], '', [$caboXY], '#e53935', 'teste');
+T::certo('pinta o cabo selecionado', $pc->ok && $pc->data['cabos_alterados'] === 1, json_encode($pc->errors));
+T::igual('a cor de rota mudou', '#E53935',
+    Db::valor('SELECT cor_rota FROM tab_ftth_cabo WHERE id = ?', [$caboXY]));
+T::igual('o outro cabo continua verde', '#00E676',
+    Db::valor('SELECT cor_rota FROM tab_ftth_cabo WHERE id = ?', [$caboXW]));
+T::igual('e os pontos não foram pintados', '#FF9100',
+    Db::valor('SELECT cor FROM tab_ftth_caixa WHERE id = ?', [$X]));
+
+$exc = Lote::excluir($regC, [], '', 'teste', [$caboXY]);
+T::certo('exclui só o cabo', $exc->ok, json_encode($exc->errors));
+T::certo('X–Y saiu', Db::valor('SELECT excluido_em FROM tab_ftth_cabo WHERE id = ?', [$caboXY]) !== null);
+T::certo('X–W ficou', Db::valor('SELECT excluido_em FROM tab_ftth_cabo WHERE id = ?', [$caboXW]) === null);
+T::igual('X e Y continuam de pé', 0, (int) Db::valor(
+    'SELECT COUNT(*) FROM tab_ftth_caixa WHERE id IN (?, ?) AND excluido_em IS NOT NULL', [$X, $Y]));
+T::igual('a fusão de Y foi desfeita', null,
+    Db::valor('SELECT id FROM tab_ftth_ligacao WHERE id = ?', [(int) $ligY->data['id']]));
+T::igual('invariantes limpas em Y', [], Topologia::invariantes($Y));

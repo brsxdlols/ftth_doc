@@ -1911,8 +1911,10 @@
      */
     function htmlPreviaFusao(d, a, b) {
         if (!d.ligadas) {
-            return '<div class="ftth-aviso">Nada a ligar: todas as '
-                 + d.total + ' fibras do trecho já estão conectadas.</div>';
+            return '<div class="ftth-aviso">' + (d.modo === 'sequencia'
+                 ? 'Nada a ligar: um dos cabos não tem fibra livre nesta caixa.'
+                 : 'Nada a ligar: todas as ' + d.total + ' fibras do trecho já estão conectadas.')
+                 + '</div>';
         }
 
         var tipos = {};
@@ -1927,7 +1929,23 @@
                  + '<strong>' + d.ligadas + ' de ' + d.total + ' fibras</strong>'
                  + '<span>' + comoSerao + '</span>';
 
-        if (d.fibras_a !== d.fibras_b) {
+        if (d.modo === 'sequencia') {
+            // Na derivação a numeração não bate (Fo13 com Fo01): mostrar quem casa com quem.
+            html += '<span class="ftth-dg-previa-nota">Cabos de ' + d.fibras_a + ' e ' + d.fibras_b
+                 +  ' fibras: as livres de cada um, na sequência.</span>';
+            var fo = function (n) { return 'Fo' + (n < 10 ? '0' : '') + n; };
+            var trechos = [];
+            (d.pares || []).forEach(function (p) {
+                if (p.estado !== 'ligar' && p.estado !== 'ligada') return;
+                var t = trechos[trechos.length - 1];
+                if (t && p.numero === t.a2 + 1 && p.numero_b === t.b2 + 1) { t.a2++; t.b2++; return; }
+                trechos.push({ a1: p.numero, a2: p.numero, b1: p.numero_b, b2: p.numero_b });
+            });
+            html += '<span class="ftth-dg-previa-nota">' + trechos.slice(0, 6).map(function (t) {
+                return (t.a1 === t.a2 ? fo(t.a1) : fo(t.a1) + '–' + fo(t.a2)) + ' → '
+                     + (t.b1 === t.b2 ? fo(t.b1) : fo(t.b1) + '–' + fo(t.b2));
+            }).join(' · ') + (trechos.length > 6 ? ' …' : '') + '</span>';
+        } else if (d.fibras_a !== d.fibras_b) {
             html += '<span class="ftth-dg-previa-nota">Cabos de ' + d.fibras_a + ' e '
                  +  d.fibras_b + ' fibras: para na menor.</span>';
         }

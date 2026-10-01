@@ -4,7 +4,7 @@ Addon para MK-AUTH que documenta a planta FTTH: caixas e cabos no mapa, importa�
 projeto, diagrama de emendas de cada CEO/CTO, POP com OLT e DIO, e cálculo de potência do sinal
 que chega em cada cliente.
 
-> **Versão 0.9.6 — beta.** Está rodando em produção no provedor que o desenvolve, mas é a
+> **Versão 0.9.7 — beta.** Está rodando em produção no provedor que o desenvolve, mas é a
 > primeira versão publicada. Instale primeiro num servidor de teste.
 
 ## Instalação
@@ -54,6 +54,21 @@ wget -O - .../instalar.sh | bash -s -- --limpar
 # instalar a partir de um pacote local (sem GitHub), gerado pelo empacotar.sh
 bash instalar.sh --pacote=/root/ftth_doc-0.9.6.tar.gz
 ```
+
+## Exportar KMZ, seleção por camada e cores do DIO (0.9.7)
+
+- **Exportar KMZ.** Na aba **Ajustes → Exportar KMZ**, escolha os tipos (CTO, CEO, DC/POP,
+  postes, cabos...) da região aberta ou de todas. No modo **Selecionar**, o botão **Exportar**
+  baixa só o que está selecionado. O arquivo abre no Google Earth com as cores do cadastro e,
+  reimportado no addon, volta com os mesmos tipos, cores e capacidades de cabo.
+- **Selecionar obedece às camadas.** O que está escondido no mapa não entra na seleção, nem na
+  Cor nem no Excluir. Com a camada **Cabos** ligada, o cabo que passa pela área entra inteiro:
+  dá para pintar ou excluir só cabos.
+- **Interligar cabos de capacidades diferentes.** No diagrama, um 72 FO que já entregou
+  Fo01–Fo12 continua do Fo13 no próximo cabo. Cabos iguais continuam casando número com número.
+- **DIO do POP.** O cartão da porta e o seletor de saída mostram a cor do tubo e da fibra.
+- **Camadas** com Marcar/Desmarcar todos, e um aviso quando você abre um ponto cuja camada está
+  desligada.
 
 ## Ponta livre, seleção por área e postes (0.9.6)
 

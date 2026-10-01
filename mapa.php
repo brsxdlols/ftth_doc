@@ -15,6 +15,26 @@ require_once __DIR__ . '/lib/Topologia.php';
 require_once __DIR__ . '/lib/Ajustes.php';
 require_once __DIR__ . '/lib/PrimeirosPassos.php';
 require_once __DIR__ . '/lib/Lote.php';
+require_once __DIR__ . '/lib/KmzExport.php';
+
+/**
+ * Os parâmetros da exportação, iguais para contar e para baixar. Com `caixas` (modo
+ * Selecionar) vale a lista; sem, os tipos marcados — da região aberta ou de todas.
+ */
+function ftth_dados_exportacao(): array
+{
+    $regiaoId = (int) ($_POST['regiao'] ?? 0);
+    if (isset($_POST['caixas'])) {
+        $caixas = json_decode((string) $_POST['caixas'], true);
+        $cabos  = json_decode((string) ($_POST['cabos_sel'] ?? '[]'), true);
+        return KmzExport::dados([$regiaoId], [], false,
+                                is_array($caixas) ? $caixas : [], is_array($cabos) ? $cabos : []);
+    }
+    $regioes = ($_POST['todas'] ?? '') === '1'
+        ? array_map('intval', array_column(Regiao::listar(), 'id')) : [$regiaoId];
+    $grupos = json_decode((string) ($_POST['tipos'] ?? '[]'), true);
+    return KmzExport::dados($regioes, is_array($grupos) ? $grupos : [], ($_POST['cabos'] ?? '') === '1');
+}
 
 /* ------------------------------------------------------------------ AJAX */
 if (isset($_GET['ajax'])) {
@@ -250,28 +270,64 @@ if (isset($_GET['ajax'])) {
                 )->enviar();
 
             // Modo Selecionar: a área desenhada vira a lista de caixas e a prévia do que sai.
-            // Com `caixas` (ids), refaz a prévia de uma seleção ajustada à mão.
+            // Com `caixas`/`cabos` (ids), refaz a prévia de uma seleção ajustada à mão. `tipos`
+            // são as camadas visíveis: o que está escondido no mapa não entra na área; com
+            // `com_cabos`, o cabo que passa pela área entra inteiro.
             case 'selecionar':
                 ftth_exigir_csrf();
                 $regiaoLote = (int) ($_POST['regiao'] ?? 0);
+                $cabosLote  = json_decode((string) ($_POST['cabos'] ?? '[]'), true);
                 if (isset($_POST['caixas'])) {
                     $ids = json_decode((string) $_POST['caixas'], true);
-                    Resultado::ok(Lote::previa($regiaoLote, is_array($ids) ? $ids : []))->enviar();
+                    Resultado::ok(Lote::previa($regiaoLote, is_array($ids) ? $ids : [],
+                                               is_array($cabosLote) ? $cabosLote : []))->enviar();
                 }
                 $poligono = json_decode((string) ($_POST['poligono'] ?? '[]'), true);
-                Lote::selecionar($regiaoLote, is_array($poligono) ? $poligono : [])->enviar();
+                $tiposLote = isset($_POST['tipos']) ? json_decode((string) $_POST['tipos'], true) : null;
+                Lote::selecionar($regiaoLote, is_array($poligono) ? $poligono : [],
+                                 isset($_POST['tipos']) ? (is_array($tiposLote) ? $tiposLote : []) : null,
+                                 ($_POST['com_cabos'] ?? '') === '1')->enviar();
 
             case 'cor_lote':
                 ftth_exigir_csrf();
                 $ids = json_decode((string) ($_POST['caixas'] ?? '[]'), true);
-                Lote::mudarCor((int) ($_POST['regiao'] ?? 0), is_array($ids) ? $ids : [],
-                               (string) ($_POST['cor'] ?? ''), $usuario_logado)->enviar();
+                $cabosLote = json_decode((string) ($_POST['cabos'] ?? '[]'), true);
+                Lote::pintar((int) ($_POST['regiao'] ?? 0), is_array($ids) ? $ids : [],
+                             (string) ($_POST['cor'] ?? ''), is_array($cabosLote) ? $cabosLote : [],
+                             (string) ($_POST['cor_cabo'] ?? ''), $usuario_logado)->enviar();
 
             case 'excluir_lote':
                 ftth_exigir_csrf();
                 $ids = json_decode((string) ($_POST['caixas'] ?? '[]'), true);
+                $cabosLote = json_decode((string) ($_POST['cabos'] ?? '[]'), true);
                 Lote::excluir((int) ($_POST['regiao'] ?? 0), is_array($ids) ? $ids : [],
-                              (string) ($_POST['confirmacao'] ?? ''), $usuario_logado)->enviar();
+                              (string) ($_POST['confirmacao'] ?? ''), $usuario_logado,
+                              is_array($cabosLote) ? $cabosLote : [])->enviar();
+
+            // Exportar KMZ (aba Ajustes e modo Selecionar). O contar responde JSON; o baixar
+            // responde o ARQUIVO — e JSON só quando falha, que é o que o JS confere.
+            case 'exportar_contar':
+                ftth_exigir_csrf();
+                Resultado::ok(KmzExport::contar(ftth_dados_exportacao()))->enviar();
+
+            case 'exportar_kmz':
+                ftth_exigir_csrf();
+                $dadosExp = ftth_dados_exportacao();
+                $titulo = count($dadosExp) > 1 ? 'todas as regiões'
+                        : (string) (reset($dadosExp)['nome'] ?? 'rede');
+                $rExp = KmzExport::exportar($dadosExp, $titulo);
+                if (!$rExp->ok) {
+                    $rExp->enviar();
+                }
+                while (ob_get_level() > 0) {
+                    ob_end_clean();
+                }
+                header('Content-Type: ' . $rExp->data['tipo_mime']);
+                header('Content-Disposition: attachment; filename="' . $rExp->data['nome'] . '"');
+                header('Content-Length: ' . strlen($rExp->data['conteudo']));
+                header('Cache-Control: no-store');
+                echo $rExp->data['conteudo'];
+                exit;
 
             case 'excluir_caixa':
                 ftth_exigir_csrf();
@@ -636,15 +692,16 @@ include('nav/header.php');
 
             <section class="ftth-gaveta-corpo" data-aba="camadas" style="display:none">
                 <div class="ftth-gaveta-lista">
-                    <p class="ftth-gaveta-secao">Mostrar no mapa</p>
+                    <p class="ftth-gaveta-secao ftth-gaveta-secao--acao">Mostrar no mapa
+                        <button type="button" id="cam-todas">Marcar todos</button></p>
                     <?php
                     // Por usuário e gravadas no banco (Ajustes::camadas): desmarcar aqui vale até
                     // o usuário marcar de novo, mesmo depois de logoff ou em outro computador.
                     $rotulosCamadas = [
                         'CTO' => ['CTO', ''], 'CEO' => ['CEO', ''], 'DC' => ['DC / POP', ''],
                         'PREDIO' => ['Prédio', ''], 'PROBLEMA' => ['Problema', ''],
-                        'RESERVA' => ['Reserva', 'sobra de cabo enrolada'],
-                        'POSTES' => ['Postes', ''], 'CABOS' => ['Cabos', 'com as pontas livres'],
+                        'RESERVA' => ['Reserva', ''],
+                        'POSTES' => ['Postes', ''], 'CABOS' => ['Cabos', ''],
                         'QUARENTENA' => ['Quarentena', 'itens importados ainda não revisados'],
                     ];
                     foreach ($rotulosCamadas as $cam => [$rotulo, $nota]): ?>
@@ -690,6 +747,8 @@ include('nav/header.php');
                     <p class="ftth-gaveta-secao" style="margin-top:16px">Dados</p>
                     <a class="ftth-btn ftth-btn--sec ftth-gaveta-acao" href="importar.php">
                         <i class="bi-box-seam"></i> Importar KMZ</a>
+                    <button type="button" class="ftth-btn ftth-btn--sec ftth-gaveta-acao" id="exp-abrir">
+                        <i class="bi-download"></i> Exportar KMZ</button>
                     <button type="button" class="ftth-btn ftth-btn--sec ftth-gaveta-acao" id="onb-rever">
                         <i class="bi-signpost-2-fill"></i> Rever os primeiros passos</button>
                 </div>
@@ -700,8 +759,8 @@ include('nav/header.php');
                 <!-- Fora do #estado-banco, que o JS reescreve a cada leitura. -->
                 <div class="ftth-gaveta-rodape ftth-autor">
                     <span>By <strong>Marcelo Silvestro</strong></span>
-                    <a href="https://wa.me/5542984277951" target="_blank" rel="noopener">
-                        <i class="bi-whatsapp"></i> +55 42 98427-7951</a>
+                    <a href="https://wa.me/5542984277951" target="_blank" rel="noopener"
+                       title="Falar no WhatsApp" aria-label="WhatsApp"><i class="bi-whatsapp"></i></a>
                 </div>
             </section>
         </aside>
@@ -769,6 +828,7 @@ include('nav/header.php');
                 <strong><i class="bi-bounding-box-circles"></i> Selecionar</strong>
                 <span id="sel-conta">0 pontos</span>
                 <span id="sel-dica" class="ftth-flutuante-dica"></span>
+                <span class="ftth-flutuante-dica ftth-sel-filtro"></span>
             </div>
             <button class="ftth-btn ftth-btn--sec" id="sel-cancelar" title="Sair do modo Selecionar">
                 <i class="bi-x-octagon-fill"></i> Cancelar</button>
@@ -786,12 +846,15 @@ include('nav/header.php');
                     <span title="Pontos"><i class="bi-geo-alt-fill"></i> <b id="sel-n-caixas">0</b></span>
                     <span title="Cabos afetados"><i class="bi-share-fill"></i> <b id="sel-n-cabos">0</b></span>
                 </span>
-                <span class="ftth-flutuante-dica">Clique num ponto para tirar ou pôr na seleção.</span>
+                <span class="ftth-flutuante-dica">Clique num ponto ou cabo para tirar ou pôr na seleção.</span>
+                <span class="ftth-flutuante-dica ftth-sel-filtro"></span>
             </div>
             <button class="ftth-btn ftth-btn--sec" id="sel-nova" title="Descartar a seleção e desenhar outra área">
                 <i class="bi-bounding-box"></i> Nova área</button>
             <button class="ftth-btn ftth-btn--sec" id="sel-cor" title="Mudar a cor dos pontos selecionados">
                 <i class="bi-palette-fill"></i> Cor</button>
+            <button class="ftth-btn ftth-btn--sec" id="sel-exportar" title="Baixar a seleção em KMZ">
+                <i class="bi-download"></i> Exportar</button>
             <button class="ftth-btn ftth-btn--perigo" id="sel-excluir">
                 <i class="bi-trash3-fill"></i> Excluir</button>
         </div>
@@ -975,6 +1038,36 @@ include('nav/header.php');
 </div>
 
 <!-- Modal de editar cabo: atributos só. O traçado não se mexe aqui (decisão de 22/09/2026). -->
+<!-- Exportar KMZ (aba Ajustes): os tipos marcados, da região aberta ou de todas. -->
+<div id="modal-exportar" class="ftth-modal" style="display:none">
+    <div class="ftth-modal-caixa">
+        <div class="ftth-modal-topo">
+            <strong><i class="bi-download"></i> Exportar KMZ</strong>
+            <button class="ftth-painel-fechar" id="exp-fechar">&times;</button>
+        </div>
+        <div class="ftth-modal-corpo">
+            <p class="ftth-gaveta-secao ftth-gaveta-secao--acao">O que vai no arquivo
+                <button type="button" id="exp-todos">Desmarcar todos</button></p>
+            <?php foreach (['CTO' => 'CTO', 'CEO' => 'CEO', 'DC' => 'DC / POP', 'PREDIO' => 'Prédio',
+                            'PROBLEMA' => 'Problema', 'RESERVA' => 'Reserva', 'POSTE' => 'Postes',
+                            'CABOS' => 'Cabos'] as $exp => $rotuloExp): ?>
+                <label class="ftth-gaveta-opcao"><input type="checkbox" class="exp-tipo" value="<?= $exp ?>">
+                    <?= htmlspecialchars($rotuloExp) ?></label>
+            <?php endforeach; ?>
+            <label class="ftth-gaveta-opcao" style="border-top:1px solid var(--ftth-borda);margin-top:6px;padding-top:10px">
+                <input type="checkbox" id="exp-todas"> Todas as regiões
+                <small>uma pasta por região no mesmo arquivo</small></label>
+            <p class="ftth-sub" id="exp-conta" style="margin:8px 0 0"></p>
+            <div id="exp-saida"></div>
+        </div>
+        <div class="ftth-modal-rodape">
+            <button class="ftth-btn ftth-btn--sec" id="exp-cancelar">Cancelar</button>
+            <button class="ftth-btn ftth-btn--pri" id="exp-baixar" disabled>
+                <i class="bi-download"></i> Baixar KMZ</button>
+        </div>
+    </div>
+</div>
+
 <!-- Cor em lote (modo Selecionar): a mesma paleta do cadastro de ponto. -->
 <div id="modal-cor-lote" class="ftth-modal" style="display:none">
     <div class="ftth-modal-caixa">
@@ -984,11 +1077,24 @@ include('nav/header.php');
         </div>
         <div class="ftth-modal-corpo">
             <p class="ftth-sub" id="lc-texto" style="margin:0 0 10px"></p>
-            <div class="ftth-cores" id="lc-cores">
-                <?php foreach (Caixa::NOMES_CORES as $hex => $nomeCor): ?>
-                    <button type="button" class="ftth-cor" data-cor="<?= $hex ?>"
-                            title="<?= htmlspecialchars($nomeCor) ?>" style="background:<?= $hex ?>"></button>
-                <?php endforeach; ?>
+            <!-- Ponto e cabo têm paletas diferentes; lado sem cor escolhida fica como está. -->
+            <div id="lc-bloco-pontos">
+                <label class="ftth-rotulo-campo">Cor dos pontos</label>
+                <div class="ftth-cores" id="lc-cores">
+                    <?php foreach (Caixa::NOMES_CORES as $hex => $nomeCor): ?>
+                        <button type="button" class="ftth-cor" data-cor="<?= $hex ?>"
+                                title="<?= htmlspecialchars($nomeCor) ?>" style="background:<?= $hex ?>"></button>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div id="lc-bloco-cabos">
+                <label class="ftth-rotulo-campo">Cor dos cabos</label>
+                <div class="ftth-cores" id="lc-cores-cabo">
+                    <?php foreach (Cabo::CORES_ROTA as $hex => $nomeCor): ?>
+                        <button type="button" class="ftth-cor" data-cor="<?= $hex ?>"
+                                title="<?= htmlspecialchars($nomeCor) ?>" style="background:<?= $hex ?>"></button>
+                    <?php endforeach; ?>
+                </div>
             </div>
             <div id="lc-saida"></div>
         </div>

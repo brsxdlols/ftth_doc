@@ -257,8 +257,8 @@ include('nav/header.php');
         <div class="ftth-dg-drawer-corpo" id="aba-fusionar" style="display:none">
             <div class="ftth-dg-grupo">Interligar dois cabos</div>
             <p class="ftth-sub">
-                As fibras são ligadas na ordem — Fo01 com Fo01, Fo02 com Fo02 — até onde o
-                cabo menor alcança. Fibra já conectada é pulada.
+                Cabos iguais: Fo01 com Fo01, Fo02 com Fo02, pulando a fibra já conectada.
+                Cabos diferentes: as fibras livres de um, na sequência, com as livres do outro.
             </p>
 
             <label class="ftth-rotulo-campo">Primeiro cabo</label>
