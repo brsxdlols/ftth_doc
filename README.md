@@ -1,5 +1,19 @@
 # FTTH Doc Visual Net — documentação da rede óptica dentro do MK-AUTH
 
+## Novidades da 0.9.11
+
+Digite para receber sugestões de endereços via Photon após uma pausa curta (800 ms).
+Pressione **Enter** ou clique em **Endereço / CEP** para pesquisar o endereço completo ou CEP.
+Resultados de pontos da rede e endereços aparecem na mesma lista. Use as setas e Enter
+para escolher um resultado, ou clique nele para aproximar o mapa.
+
+No provedor gratuito, os botões **Mapa / Satélite**, no canto superior direito, alternam
+entre OpenStreetMap e Esri World Imagery. A escolha fica salva no navegador; os pontos
+e cabos continuam visíveis. Atribuições dos fornecedores aparecem no mapa.
+As sugestões Photon usam cache e limite de consultas. Nominatim é usado somente na
+pesquisa explícita, nunca como autocomplete. Os serviços públicos têm limites e sua
+disponibilidade e cobertura dependem dos fornecedores.
+
 Derivado do [FTTH Doc de Marcelo Silvestro](https://github.com/marcelosilvestro/ftth_doc), sob licença MIT.
 
 ## Versão Visual Net 0.9.8
@@ -11,10 +25,10 @@ Mensagens de CEP inválido e serviços indisponíveis aparecem diretamente na te
 - OpenStreetMap com Leaflet 1.9.4, gratuito e sem chave, como padrão quando não existe chave Google.
 - Google Maps continua disponível em **Ajustes → Provedor do mapa**; instalações com chave conservam o Google.
 - Marcadores, traçado de cabos, edição de vértices, seleção por área e camadas usam os mesmos cadastros.
-- Digite um endereço com cidade ou CEP e clique em **Endereço / CEP**. A pesquisa por itens da rede continua automática.
+- Digite um endereço com cidade ou CEP: sugestões aparecem automaticamente; Enter ou **Endereço / CEP** pesquisa explicitamente.
 - ViaCEP retorna o endereço postal; Nominatim procura coordenadas aproximadas. Confirme o ponto antes de cadastrar uma caixa.
 - A busca externa ocorre somente ao clicar, com cache de 24 horas e limite global de consultas.
-- No OpenStreetMap a camada é **Ruas**. Satélite, híbrido, relevo e Street View dependem do Google.
+- No provedor gratuito, **Mapa** usa OpenStreetMap e **Satélite** usa Esri. Híbrido, relevo e Street View permanecem disponíveis no Google.
 - Os mapas públicos OSM têm [política de utilização](https://operations.osmfoundation.org/policies/tiles/) e disponibilidade sem garantia. Sem downloads em massa ou mapas offline.
 
 Instale ou atualize usando o repositório Visual Net:

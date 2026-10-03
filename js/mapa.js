@@ -1341,30 +1341,6 @@
         });
     }
 
-    var buscaExterna = false;
-    function buscar(termo) {
-        if (termo.length < 2) { $('#busca-lista').hide(); return; }
-        FTTH.chamar({
-            url: 'mapa.php?ajax=buscar&regiao=' + regiao + '&q=' + encodeURIComponent(termo),
-            onOk: function (d) {
-                if (buscaExterna || $('#busca').val() !== termo) return;
-                var html = '', grupo = '';
-                d.resultados.forEach(function (r) {
-                    if (r.grupo !== grupo) {
-                        grupo = r.grupo;
-                        html += '<div class="ftth-busca-grupo">' + esc(grupo) + '</div>';
-                    }
-                    html += '<div class="ftth-busca-item" data-lat="' + r.lat + '" data-lng="' + r.lng
-                         +  '" data-id="' + r.id + '" data-tipo="' + r.tipo + '">'
-                         +  '<strong>' + esc(r.rotulo) + '</strong> <span class="ftth-sub">' + esc(r.detalhe) + '</span>'
-                         +  '</div>';
-                });
-                $('#busca-lista').html(html || '<div class="ftth-busca-item ftth-sub">Nada encontrado.</div>').show();
-            },
-            onErro: function () { $('#busca-lista').hide(); }
-        });
-    }
-
     /** O mapa ocupa tudo o que sobra da janela — nada de altura fixa chutada. */
     function ajustarAltura() {
         var el = document.getElementById('mapa');
@@ -3583,34 +3559,7 @@
 
         atualizarContaCamadas();
 
-        var timerBusca = null;
-        var enderecoSeq = 0;
-        $('#busca-endereco').on('click', function () {
-            var termo = $.trim($('#busca').val());
-            if (termo.length < 3) { FTTH.toast('info', 'Digite um endereço com cidade ou um CEP.'); return; }
-            clearTimeout(timerBusca);
-            buscaExterna = true;
-            var seq = ++enderecoSeq;
-            var $b = $(this).prop('disabled', true);
-            FTTH.chamar({ url: 'mapa.php?ajax=buscar_endereco&q=' + encodeURIComponent(termo),
-                onOk: function (d) {
-                    if (seq !== enderecoSeq) return;
-                    var html = '<div class="ftth-busca-grupo">Endereços · OpenStreetMap / ViaCEP</div>';
-                    d.resultados.forEach(function (r) {
-                        html += '<div class="ftth-busca-item" data-lat="' + r.lat + '" data-lng="' + r.lng + '">' + esc(r.rotulo) + '</div>';
-                    });
-                    if (!d.resultados.length) html += '<div class="ftth-busca-item">' + (d.endereco ? esc([d.endereco.logradouro, d.endereco.bairro, d.endereco.localidade, d.endereco.uf].filter(Boolean).join(', ')) + ' — CEP encontrado, mas sem coordenadas. Busque pela cidade ou bairro.' : 'Endereço não encontrado. Informe também a cidade.') + '</div>';
-                    $('#busca-lista').html(html).show();
-                }, onErro: function (m) { FTTH.toast('erro', m); }
-            }).always(function () { $b.prop('disabled', false); });
-        });
-        $('#busca').on('input', function () {
-            buscaExterna = false;
-            enderecoSeq++;
-            var t = this.value;
-            clearTimeout(timerBusca);
-            timerBusca = setTimeout(function () { buscar(t); }, 250);
-        });
+        FTTH_BUSCA.iniciar(function () { return regiao; });
 
         $(document).on('click', '.ftth-busca-item[data-lat]', function () {
             var lat = parseFloat($(this).data('lat'));

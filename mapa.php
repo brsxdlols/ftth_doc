@@ -123,10 +123,13 @@ if (isset($_GET['ajax'])) {
             case 'pontos':
                 Resultado::ok(['pontos' => Mapa::pontos((int) ($_GET['regiao'] ?? 0))])->enviar();
 
+            case 'sugerir_endereco':
             case 'buscar_endereco':
                 require_once __DIR__ . '/lib/BuscaEndereco.php';
                 try {
-                    Resultado::ok(BuscaEndereco::buscar((string) ($_GET['q'] ?? '')))->enviar();
+                    $termo = (string) ($_GET['q'] ?? '');
+                    Resultado::ok($_GET['ajax'] === 'sugerir_endereco'
+                        ? BuscaEndereco::sugerir($termo) : BuscaEndereco::buscar($termo))->enviar();
                 } catch (RuntimeException | InvalidArgumentException $e) {
                     Log::excecao('mapa.buscar_endereco', $e);
                     Resultado::erro('FTTH-SYS-002', [], $e->getMessage())->enviar(400);
@@ -734,7 +737,7 @@ include('nav/header.php');
                             <option value="osm" <?= $provedor === 'osm' ? 'selected' : '' ?>>OpenStreetMap — gratuito, sem chave</option>
                             <option value="google" <?= $provedor === 'google' ? 'selected' : '' ?>>Google Maps — requer chave</option>
                         </select>
-                        <p class="ftth-sub">No OpenStreetMap, a camada disponível é Ruas. Satélite, híbrido e relevo usam Google Maps.</p>
+                        <p class="ftth-sub">No modo gratuito, alterne entre Mapa (OpenStreetMap) e Satélite (Esri) pelos botões no mapa. Google Maps oferece também híbrido, relevo e Street View.</p>
                         <label class="ftth-rotulo-campo" for="aj-chave">Chave do Google Maps</label>
                         <input id="aj-chave" class="ftth-campo" autocomplete="off" spellcheck="false"
                                placeholder="AIza..." value="<?= htmlspecialchars($aj['google_maps_key']) ?>">
@@ -1291,6 +1294,7 @@ window.FTTH_MAPA = {
 <script src="js/vendor/leaflet/leaflet.js"></script>
 <script src="js/mapa-osm.js?v=<?= time() ?>"></script>
 <?php endif; ?>
+<script src="js/busca-endereco.js?v=<?= time() ?>"></script>
 <script src="js/mapa.js?v=<?= time() ?>"></script>
 <script src="js/onboarding.js?v=<?= time() ?>"></script>
 <?php if ($provedor === 'osm'): ?>

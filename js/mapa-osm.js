@@ -29,10 +29,34 @@
         Events.call(this);
         var self = this;
         this.l = L.map(el, { maxZoom: 21, doubleClickZoom: false }).setView(coord(opts.center), opts.zoom);
-        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        this.bases = {};
+        this.bases.roadmap = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxNativeZoom: 19, maxZoom: 21,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        }).addTo(this.l);
+        });
+        this.bases.satellite = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxNativeZoom: 19, maxZoom: 21,
+            attribution: 'Imagens &copy; <a href="https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9">Esri</a>, Maxar, Earthstar Geographics e GIS User Community'
+        });
+        this.tipo = 'roadmap';
+        try { this.tipo = localStorage.getItem('ftth_mapa_base') === 'satellite' ? 'satellite' : 'roadmap'; } catch (e) {}
+        this.bases[this.tipo].addTo(this.l);
+        var ControleBase = L.Control.extend({ options: { position: 'topright' }, onAdd: function () {
+            var div = L.DomUtil.create('div', 'leaflet-bar ftth-osm-bases');
+            self.botoesBase = {};
+            ['roadmap', 'satellite'].forEach(function (tipo) {
+                var b = document.createElement('button'); b.type = 'button';
+                b.textContent = tipo === 'roadmap' ? 'Mapa' : 'Satélite';
+                b.classList.toggle('ativo', tipo === self.tipo);
+                b.setAttribute('aria-pressed', String(tipo === self.tipo));
+                b.addEventListener('click', function () { self.setMapTypeId(tipo); });
+                self.botoesBase[tipo] = b; div.appendChild(b);
+            });
+            L.DomEvent.disableClickPropagation(div); L.DomEvent.disableScrollPropagation(div);
+            return div;
+        } });
+        new ControleBase().addTo(this.l);
+        this.l.zoomControl.setPosition('topright');
         L.control.scale({ imperial: false }).addTo(this.l);
         this.overlayMapTypes = { getLength: function () { return 0; }, insertAt: function () {}, clear: function () {} };
         this.l.on('moveend', function () { self.emit('idle'); });
@@ -53,8 +77,19 @@
         var self = this; setTimeout(function () { self.emit('idle'); }, 0);
     };
     Map.prototype.setOptions = function (o) { this.l.getContainer().style.cursor = o.draggableCursor || ''; };
-    Map.prototype.getMapTypeId = function () { return 'roadmap'; };
-    Map.prototype.setMapTypeId = function () {};
+    Map.prototype.getMapTypeId = function () { return this.tipo; };
+    Map.prototype.setMapTypeId = function (tipo) {
+        tipo = tipo === 'satellite' || tipo === 'hybrid' ? 'satellite' : 'roadmap';
+        if (tipo === this.tipo) return;
+        this.l.removeLayer(this.bases[this.tipo]); this.tipo = tipo; this.bases[tipo].addTo(this.l);
+        var self = this;
+        Object.keys(this.botoesBase || {}).forEach(function (t) {
+            self.botoesBase[t].classList.toggle('ativo', t === tipo);
+            self.botoesBase[t].setAttribute('aria-pressed', String(t === tipo));
+        });
+        try { localStorage.setItem('ftth_mapa_base', tipo); } catch (e) {}
+        this.emit('maptypeid_changed');
+    };
     Map.prototype.getProjection = function () {
         return { fromLatLngToPoint: function (p) { return L.CRS.EPSG3857.latLngToPoint(coord(p), 0); } };
     };

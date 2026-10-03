@@ -3,6 +3,52 @@ require_once __DIR__ . '/Config.php';
 /** Busca explícita, com cache e limite global de uma consulta por segundo ao Nominatim. */
 final class BuscaEndereco
 {
+    /** Photon permite sugestões durante a digitação; Nominatim só recebe buscas explícitas. */
+    public static function sugerir(string $termo): array
+    {
+        $termo = trim($termo);
+        if (mb_strlen($termo) < 4 || mb_strlen($termo) > 200) return ['resultados' => []];
+        $diretorio = (defined('FTTH_DIR_DADOS') ? FTTH_DIR_DADOS : '/opt/mk-auth/dados/ftth_doc') . '/enderecos';
+        if (!is_dir($diretorio) && !@mkdir($diretorio, 0770, true) && !is_dir($diretorio)) {
+            throw new RuntimeException('Não foi possível preparar a busca.');
+        }
+        $arquivo = $diretorio . '/photon-' . hash('sha256', mb_strtolower($termo)) . '.json';
+        if (is_file($arquivo) && filemtime($arquivo) > time() - 86400) {
+            return json_decode((string) file_get_contents($arquivo), true) ?: ['resultados' => []];
+        }
+        $lock = 'ftth_doc_photon_' . substr(hash('sha256', $diretorio), 0, 16);
+        if ((int) Db::valor('SELECT GET_LOCK(?, 0)', [$lock]) !== 1) {
+            throw new RuntimeException('Busca em andamento. Pressione Enter para pesquisar.');
+        }
+        try {
+            Config::limparCache();
+            if (microtime(true) - (float) Config::get('busca_photon_ultimo', '0') < 1) {
+                throw new RuntimeException('Aguarde um instante ou pressione Enter para pesquisar.');
+            }
+            Config::set('busca_photon_ultimo', (string) microtime(true), 'busca_endereco');
+            $dados = self::consultar('https://photon.komoot.io/api/?' . http_build_query([
+                'q' => preg_replace('/^av\.?\s+/iu', 'avenida ', $termo), 'limit' => 8, 'bbox' => '-74,-34,-34,6',
+            ]));
+            $resultados = [];
+            foreach ($dados['features'] ?? [] as $item) {
+                $p = $item['properties'] ?? [];
+                $coords = $item['geometry']['coordinates'] ?? [];
+                if (strtoupper((string) ($p['countrycode'] ?? '')) !== 'BR' || count($coords) < 2) continue;
+                $nome = trim(implode(' ', array_filter([$p['street'] ?? $p['name'] ?? '', $p['housenumber'] ?? ''])));
+                $rotulo = implode(', ', array_unique(array_filter([$nome, $p['district'] ?? '',
+                    $p['city'] ?? $p['county'] ?? '', $p['state'] ?? '', $p['postcode'] ?? '', 'Brasil'])));
+                $resultados[] = ['lat' => (float) $coords[1], 'lng' => (float) $coords[0], 'rotulo' => $rotulo];
+            }
+            $saida = ['resultados' => $resultados];
+            $temporario = tempnam($diretorio, 'consulta-');
+            if ($temporario !== false) {
+                if (file_put_contents($temporario, json_encode($saida)) !== false) rename($temporario, $arquivo);
+                else @unlink($temporario);
+            }
+            return $saida;
+        } finally { Db::valor('SELECT RELEASE_LOCK(?)', [$lock]); }
+    }
+
     private static function consultar(string $url): array
     {
         // Alguns MK-AUTH usam PHP estático sem caminho de certificados configurado.
