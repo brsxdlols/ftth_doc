@@ -169,6 +169,7 @@ a.ftth-kpi:hover  { border-color: var(--ftth-azul-claro); background: #fff; }
 .ftth-mapa-barra  { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
                     margin-bottom: 8px; }
 .ftth-mapa-barra .ftth-modos { margin-bottom: 0; }
+.ftth-mapa-barra { position: relative; z-index: 10; }
 .ftth-mapa-barra .ftth-modo  { padding: 7px 12px; }
 
 /* Resumo da planta: compacto, para caber na mesma linha sem competir com os botões. */
