@@ -4,6 +4,10 @@ Derivado do [FTTH Doc de Marcelo Silvestro](https://github.com/marcelosilvestro/
 
 ## Versão Visual Net 0.9.8
 
+Correção 0.9.9: cache de endereços na pasta de dados do addon e bloqueio de consultas pelo
+MySQL, compatível com o usuário do painel e as restrições do AppArmor no MK-AUTH.
+Mensagens de CEP inválido e serviços indisponíveis aparecem diretamente na tela.
+
 - OpenStreetMap com Leaflet 1.9.4, gratuito e sem chave, como padrão quando não existe chave Google.
 - Google Maps continua disponível em **Ajustes → Provedor do mapa**; instalações com chave conservam o Google.
 - Marcadores, traçado de cabos, edição de vértices, seleção por área e camadas usam os mesmos cadastros.

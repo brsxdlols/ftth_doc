@@ -125,7 +125,12 @@ if (isset($_GET['ajax'])) {
 
             case 'buscar_endereco':
                 require_once __DIR__ . '/lib/BuscaEndereco.php';
-                Resultado::ok(BuscaEndereco::buscar((string) ($_GET['q'] ?? '')))->enviar();
+                try {
+                    Resultado::ok(BuscaEndereco::buscar((string) ($_GET['q'] ?? '')))->enviar();
+                } catch (RuntimeException | InvalidArgumentException $e) {
+                    Log::excecao('mapa.buscar_endereco', $e);
+                    Resultado::erro('FTTH-SYS-002', [], $e->getMessage())->enviar(400);
+                }
                 break;
 
             case 'buscar':

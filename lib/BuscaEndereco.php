@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/Config.php';
 /** Busca explícita, com cache e limite global de uma consulta por segundo ao Nominatim. */
 final class BuscaEndereco
 {
@@ -40,8 +41,8 @@ final class BuscaEndereco
         if (mb_strlen($termo) < 3 || mb_strlen($termo) > 200) {
             throw new InvalidArgumentException('Informe um endereço ou CEP válido.');
         }
-        $diretorio = sys_get_temp_dir() . '/ftth_doc_enderecos';
-        if (!is_dir($diretorio) && !@mkdir($diretorio, 0700, true) && !is_dir($diretorio)) {
+        $diretorio = (defined('FTTH_DIR_DADOS') ? FTTH_DIR_DADOS : '/opt/mk-auth/dados/ftth_doc') . '/enderecos';
+        if (!is_dir($diretorio) && !@mkdir($diretorio, 0770, true) && !is_dir($diretorio)) {
             throw new RuntimeException('Não foi possível preparar o cache de endereços.');
         }
         $arquivo = $diretorio . '/' . hash('sha256', $termo) . '.json';
@@ -55,17 +56,18 @@ final class BuscaEndereco
             $termo = implode(', ', array_filter([$endereco['logradouro'] ?? '', $endereco['bairro'] ?? '',
                 $endereco['localidade'] ?? '', $endereco['uf'] ?? '', 'Brasil']));
         }
-        $lock = fopen($diretorio . '/nominatim.lock', 'c+');
-        if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) {
-            if ($lock) fclose($lock);
+        // O painel MK-AUTH restringe flock pelo AppArmor; o lock é da conexão MySQL.
+        $lock = 'ftth_doc_nominatim_' . substr(hash('sha256', $diretorio), 0, 16);
+        if ((int) Db::valor('SELECT GET_LOCK(?, 0)', [$lock]) !== 1) {
             throw new RuntimeException('Outra busca está em andamento. Aguarde e tente novamente.');
         }
         try {
-            $anterior = (float) stream_get_contents($lock);
+            Config::limparCache();
+            $anterior = (float) Config::get('busca_endereco_ultimo', '0');
             if (microtime(true) - $anterior < 1.1) {
                 throw new RuntimeException('Aguarde um segundo antes de buscar novamente.');
             }
-            rewind($lock); ftruncate($lock, 0); fwrite($lock, (string) microtime(true)); fflush($lock);
+            Config::set('busca_endereco_ultimo', (string) microtime(true), 'busca_endereco');
             $dados = self::consultar('https://nominatim.openstreetmap.org/search?' . http_build_query([
                 'format' => 'jsonv2', 'q' => $termo, 'countrycodes' => 'br', 'limit' => 5,
                 'accept-language' => 'pt-BR',
@@ -74,8 +76,14 @@ final class BuscaEndereco
                 return ['lat' => (float) $item['lat'], 'lng' => (float) $item['lon'],
                     'rotulo' => (string) $item['display_name']];
             }, $dados)];
-            file_put_contents($arquivo, json_encode($saida), LOCK_EX);
+            // Publicação atômica, sem flock; arquivos temporários não servem como cache.
+            $temporario = tempnam($diretorio, 'consulta-');
+            if ($temporario !== false) {
+                if (file_put_contents($temporario, json_encode($saida)) !== false) {
+                    rename($temporario, $arquivo);
+                } else { @unlink($temporario); }
+            }
             return $saida;
-        } finally { flock($lock, LOCK_UN); fclose($lock); }
+        } finally { Db::valor('SELECT RELEASE_LOCK(?)', [$lock]); }
     }
 }
