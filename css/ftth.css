@@ -973,3 +973,15 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
    o texto quebrava; em Pontos, mais curto, ficava ao lado. Agora as duas iguais. */
 .ftth-gaveta-tab span   { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .ftth-gaveta-tab span b { margin-left: 0; }
+
+/* Leaflet: controles abaixo dos painéis FTTH e atribuição sempre visível. */
+#mapa .leaflet-pane { z-index: 1; }
+#mapa .leaflet-top, #mapa .leaflet-bottom { z-index: 5; }
+#mapa .leaflet-marker-pane { z-index: 4; }
+#mapa .leaflet-tooltip-pane { z-index: 4; }
+.ftth-osm-label { background: #fff; color: #222; border: 0; font-size: 11px; padding: 2px 4px; }
+.ftth-osm-handle { background: white; border: 2px solid #1683e8; border-radius: 50%; }
+.ftth-osm-middle { opacity: .6; }
+.ftth-osm-bounce { filter: drop-shadow(0 0 5px #ff9800); }
+#busca-endereco { white-space: nowrap; position: absolute; right: 2px; top: 2px; padding: 5px 6px; font-size: 11px; }
+.ftth-mapa-barra #busca { padding-right: 105px; }

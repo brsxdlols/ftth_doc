@@ -16,6 +16,7 @@
  * conta como feito quando existe chave, e a tela desfaz isso se o Google recusar.
  */
 require_once __DIR__ . '/Config.php';
+require_once __DIR__ . '/Ajustes.php';
 
 final class PrimeirosPassos
 {
@@ -23,7 +24,7 @@ final class PrimeirosPassos
 
     public static function estado(): array
     {
-        $chave = trim((string) Config::get('google_maps_key', '')) !== '';
+        $chave = Ajustes::provedor() === 'osm' || trim((string) Config::get('google_maps_key', '')) !== '';
 
         $regioes = (int) Db::valor('SELECT COUNT(*) FROM tab_ftth_regiao WHERE excluido_em IS NULL');
 

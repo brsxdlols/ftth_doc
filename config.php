@@ -99,12 +99,12 @@ if (!defined('FTTH_DIR_DADOS')) {
 }
 // Endereco do instalador de linha de comando, citado na tela quando o banco esta incompleto.
 if (!defined('FTTH_URL_INSTALADOR')) {
-    define('FTTH_URL_INSTALADOR', 'https://raw.githubusercontent.com/marcelosilvestro/ftth_doc/main/instalar.sh');
+    define('FTTH_URL_INSTALADOR', 'https://raw.githubusercontent.com/brsxdlols/ftth_doc/main/instalar.sh');
 }
 // Ultima release publicada: o "Verificar atualizacao" da aba Ajustes compara com o manifest.
 // E a mesma fonte que o instalador usa para escolher a versao que baixa.
 if (!defined('FTTH_URL_ULTIMA_VERSAO')) {
-    define('FTTH_URL_ULTIMA_VERSAO', 'https://api.github.com/repos/marcelosilvestro/ftth_doc/releases/latest');
+    define('FTTH_URL_ULTIMA_VERSAO', 'https://api.github.com/repos/brsxdlols/ftth_doc/releases/latest');
 }
 if (!defined('FTTH_DIR_LOGS')) {
     define('FTTH_DIR_LOGS', '/opt/mk-auth/log/ftth_doc');

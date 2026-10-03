@@ -123,6 +123,11 @@ if (isset($_GET['ajax'])) {
             case 'pontos':
                 Resultado::ok(['pontos' => Mapa::pontos((int) ($_GET['regiao'] ?? 0))])->enviar();
 
+            case 'buscar_endereco':
+                require_once __DIR__ . '/lib/BuscaEndereco.php';
+                Resultado::ok(BuscaEndereco::buscar((string) ($_GET['q'] ?? '')))->enviar();
+                break;
+
             case 'buscar':
                 Resultado::ok(['resultados' => Mapa::buscar(
                     (int) ($_GET['regiao'] ?? 0), (string) ($_GET['q'] ?? ''))])->enviar();
@@ -432,6 +437,7 @@ if (isset($_GET['ajax'])) {
 /* ------------------------------------------------------------------ página */
 $regioes   = [];
 $chave     = '';
+$provedor  = 'osm';
 $aj        = ['google_maps_key' => '', 'mapa_tipo' => 'hybrid', 'mapa_rotulo_zoom' => 17,
               'raio_quebra_cabo_m' => 10];
 $falha     = null;
@@ -441,6 +447,7 @@ try {
     $regioes = Regiao::listar();
     $chave   = (string) Config::get('google_maps_key', '');
     $aj      = Ajustes::valores();
+    $provedor = $aj['mapa_provedor'];
     $passos  = PrimeirosPassos::estado();
     $camadasUsuario = Ajustes::camadas($usuario_logado);
 } catch (Throwable $e) {
@@ -483,6 +490,7 @@ include('nav/header.php');
             <i class="bi-search ftth-busca-icone"></i>
             <input id="busca" class="ftth-campo ftth-busca-campo" autocomplete="off"
                    placeholder="Buscar ponto, cliente ou coordenada…">
+            <button type="button" id="busca-endereco" class="ftth-btn ftth-btn--sec" title="Pesquisar endereço ou CEP digitado">Endereço / CEP</button>
             <div id="busca-lista" class="ftth-busca-lista"></div>
         </div>
 
@@ -498,7 +506,7 @@ include('nav/header.php');
     </div>
 
     <div class="ftth-mapa-area" id="mapa-area">
-        <div id="mapa"<?= $chave === '' ? ' class="ftth-mapa-vazio"' : '' ?>></div>
+        <div id="mapa"<?= $provedor === 'google' && $chave === '' ? ' class="ftth-mapa-vazio"' : '' ?>></div>
 
         <!-- Primeiros passos (js/onboarding.js). Card centralizado nos passos de ler e decidir;
              nos que exigem mexer no mapa ele sai da frente e fica só o balão de baixo. O passo
@@ -509,7 +517,7 @@ include('nav/header.php');
                 <div class="ftth-onb-topo">
                     <span class="ftth-onb-selo">Primeiros passos</span>
                     <ol class="ftth-onb-trilha" id="onb-trilha">
-                        <li data-passo="chave"><span>1</span>Chave</li>
+                        <li data-passo="chave"><span>1</span>Mapa</li>
                         <li data-passo="regiao"><span>2</span>Região</li>
                         <li data-passo="pop"><span>3</span>POP</li>
                         <li data-passo="caixa"><span>4</span>Caixa</li>
@@ -521,8 +529,9 @@ include('nav/header.php');
                     <h2 id="onb-titulo"><i class="bi-key-fill"></i>
                         <span id="onb-chave-titulo">Bem-vindo ao FTTH Doc</span></h2>
                     <p id="onb-chave-texto">Em cinco passos a sua rede começa a aparecer no mapa. O
-                        primeiro é a chave do Google Maps, que é quem desenha o mapa.</p>
+                        mapa pode usar OpenStreetMap gratuitamente, sem chave, ou Google Maps.</p>
                     <div id="onb-chave-erro" class="ftth-aviso ftth-aviso--erro" style="display:none"></div>
+                    <button type="button" class="ftth-btn ftth-btn--pri" id="onb-osm">Usar OpenStreetMap gratuito</button>
                     <label class="ftth-rotulo-campo" for="onb-chave">Chave do Google Maps</label>
                     <div class="ftth-onb-linha">
                         <input id="onb-chave" class="ftth-campo" autocomplete="off" spellcheck="false">
@@ -549,9 +558,7 @@ include('nav/header.php');
                             <li>Copie a chave, cole acima e salve.</li>
                         </ol>
                     </details>
-                    <p class="ftth-sub ftth-onb-nota">A chave fica guardada no seu servidor. Nenhum dado da
-                        sua rede sai dele: fora o próprio mapa, o addon só consulta o GitHub quando
-                        você pede para verificar atualização.</p>
+                    <p class="ftth-sub ftth-onb-nota">A chave fica guardada no seu servidor. Os serviços de mapa recebem a área visualizada. A busca de endereço consulta ViaCEP e OpenStreetMap; a documentação da rede permanece no servidor.</p>
                 </section>
 
                 <section class="ftth-onb-passo" data-passo="regiao">
@@ -717,6 +724,12 @@ include('nav/header.php');
                 <div class="ftth-gaveta-lista">
                     <p class="ftth-gaveta-secao">Ajustes do mapa</p>
                     <div class="ftth-ajustes">
+                        <label class="ftth-rotulo-campo" for="aj-provedor">Provedor do mapa</label>
+                        <select id="aj-provedor" class="ftth-campo">
+                            <option value="osm" <?= $provedor === 'osm' ? 'selected' : '' ?>>OpenStreetMap — gratuito, sem chave</option>
+                            <option value="google" <?= $provedor === 'google' ? 'selected' : '' ?>>Google Maps — requer chave</option>
+                        </select>
+                        <p class="ftth-sub">No OpenStreetMap, a camada disponível é Ruas. Satélite, híbrido e relevo usam Google Maps.</p>
                         <label class="ftth-rotulo-campo" for="aj-chave">Chave do Google Maps</label>
                         <input id="aj-chave" class="ftth-campo" autocomplete="off" spellcheck="false"
                                placeholder="AIza..." value="<?= htmlspecialchars($aj['google_maps_key']) ?>">
@@ -1251,6 +1264,7 @@ include('nav/header.php');
 
 <script>
 window.FTTH_MAPA = {
+    provedor: <?= json_encode($provedor) ?>,
     csrf:   <?= json_encode(ftth_csrf_token()) ?>,
     regiao: <?= $regiaoInicial ? (int) $regiaoInicial['id'] : 0 ?>,
     // Todas as regiões, com a moldura dos pontos: o mapa se posiciona por elas.
@@ -1267,9 +1281,16 @@ window.FTTH_MAPA = {
     camadas: <?= json_encode($camadasUsuario) ?>
 };
 </script>
+<?php if ($provedor === 'osm'): ?>
+<link rel="stylesheet" href="js/vendor/leaflet/leaflet.css">
+<script src="js/vendor/leaflet/leaflet.js"></script>
+<script src="js/mapa-osm.js?v=<?= time() ?>"></script>
+<?php endif; ?>
 <script src="js/mapa.js?v=<?= time() ?>"></script>
 <script src="js/onboarding.js?v=<?= time() ?>"></script>
-<?php if ($chave !== ''): ?>
+<?php if ($provedor === 'osm'): ?>
+<script>ftthIniciarMapa();</script>
+<?php elseif ($chave !== ''): ?>
 <script async defer
     src="https://maps.googleapis.com/maps/api/js?key=<?= rawurlencode($chave) ?>&callback=ftthIniciarMapa&language=pt-BR&region=BR"></script>
 <?php endif; ?>

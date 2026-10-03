@@ -1,4 +1,33 @@
-# FTTH Doc — documentação da rede óptica dentro do MK-AUTH
+# FTTH Doc Visual Net — documentação da rede óptica dentro do MK-AUTH
+
+Derivado do [FTTH Doc de Marcelo Silvestro](https://github.com/marcelosilvestro/ftth_doc), sob licença MIT.
+
+## Versão Visual Net 0.9.8
+
+- OpenStreetMap com Leaflet 1.9.4, gratuito e sem chave, como padrão quando não existe chave Google.
+- Google Maps continua disponível em **Ajustes → Provedor do mapa**; instalações com chave conservam o Google.
+- Marcadores, traçado de cabos, edição de vértices, seleção por área e camadas usam os mesmos cadastros.
+- Digite um endereço com cidade ou CEP e clique em **Endereço / CEP**. A pesquisa por itens da rede continua automática.
+- ViaCEP retorna o endereço postal; Nominatim procura coordenadas aproximadas. Confirme o ponto antes de cadastrar uma caixa.
+- A busca externa ocorre somente ao clicar, com cache de 24 horas e limite global de consultas.
+- No OpenStreetMap a camada é **Ruas**. Satélite, híbrido, relevo e Street View dependem do Google.
+- Os mapas públicos OSM têm [política de utilização](https://operations.osmfoundation.org/policies/tiles/) e disponibilidade sem garantia. Sem downloads em massa ou mapas offline.
+
+Instale ou atualize usando o repositório Visual Net:
+
+```bash
+wget -O - https://raw.githubusercontent.com/brsxdlols/ftth_doc/main/instalar.sh | bash
+```
+
+O instalador mantém o backup original. Não use o instalador do repositório upstream para atualizar esta variante.
+
+### Validação da 0.9.8
+
+Sintaxe PHP 8.0 e shell validada; sete testes específicos de provedor em banco separado;
+marcadores, polígonos e edição de vértices verificados no navegador. A suíte original completa
+depende de `tests/dados/AsBuilt_Palmital.kmz`, que não está publicado no upstream.
+
+## Documentação original
 
 Addon para MK-AUTH que documenta a planta FTTH: caixas e cabos no mapa, importação do KMZ do
 projeto, diagrama de emendas de cada CEO/CTO, POP com OLT e DIO, e cálculo de potência do sinal
@@ -25,9 +54,8 @@ Depois de instalar, entre no painel: **PROVEDOR → Documentação FTTH**.
 
 - MK-AUTH instalado (o script confere `/opt/mk-auth`)
 - PHP 8.0 ou superior com `pdo_mysql`, `zip`, `dom`, `simplexml` e `mbstring`
-- Uma **chave do Google Maps** (Maps JavaScript API). O mapa não abre sem ela — cadastre em
-  *Configurações*, dentro do addon, e restrinja a chave ao domínio do seu painel no console do
-  Google.
+- Para Google Maps, uma **chave da Maps JavaScript API**, cadastrada em Ajustes e restrita
+  ao domínio do painel. OpenStreetMap funciona sem chave.
 
 ### Se o seu MySQL não usa a senha padrão
 
@@ -116,7 +144,7 @@ A distância em que o mapa considera que a caixa caiu "em cima" do cabo é ajust
 
 ## Como começar a usar
 
-1. **Configurações** → cadastre a chave do Google Maps.
+1. **Ajustes** → escolha OpenStreetMap ou cadastre a chave do Google Maps.
 2. **Regiões** → crie a primeira região (uma cidade ou bairro), com as coordenadas do centro.
 3. **Importar KMZ** → envie o as-built do seu projeto. Nada entra na rede direto: tudo fica em
    *quarentena* para você conferir item por item antes de aprovar.

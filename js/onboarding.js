@@ -244,7 +244,7 @@
             FTTH.chamar({
                 url: 'mapa.php?ajax=ajustes',
                 method: 'POST',
-                data: { csrf: cfg.csrf, google_maps_key: chave },
+                data: { csrf: cfg.csrf, mapa_provedor: 'google', google_maps_key: chave },
                 onOk: function () { window.location.reload(); },
                 onErro: function (m) {
                     $('#onb-chave-saida').html('<div class="ftth-aviso ftth-aviso--erro">' + esc(m) + '</div>');
@@ -252,6 +252,13 @@
                 }
             });
         };
+        $('#onb-osm').on('click', function () {
+            FTTH.chamar({ url: 'mapa.php?ajax=ajustes', method: 'POST',
+                data: { csrf: cfg.csrf, mapa_provedor: 'osm' },
+                onOk: function () { window.location.reload(); },
+                onErro: function (m) { $('#onb-chave-saida').text(m); }
+            });
+        });
         $('#onb-chave-salvar').on('click', salvarChave);
         $('#onb-chave').on('keydown', function (e) { if (e.key === 'Enter') salvarChave(); });
 

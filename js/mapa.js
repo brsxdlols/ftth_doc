@@ -1341,11 +1341,13 @@
         });
     }
 
+    var buscaExterna = false;
     function buscar(termo) {
         if (termo.length < 2) { $('#busca-lista').hide(); return; }
         FTTH.chamar({
             url: 'mapa.php?ajax=buscar&regiao=' + regiao + '&q=' + encodeURIComponent(termo),
             onOk: function (d) {
+                if (buscaExterna || $('#busca').val() !== termo) return;
                 var html = '', grupo = '';
                 d.resultados.forEach(function (r) {
                     if (r.grupo !== grupo) {
@@ -2999,12 +3001,14 @@
             method: 'POST',
             data: {
                 csrf: cfg.csrf,
+                mapa_provedor: $('#aj-provedor').val(),
                 google_maps_key: $('#aj-chave').val(),
                 mapa_tipo: $('#aj-tipo').val(),
                 // Sem raio_quebra_cabo_m: o campo saiu da tela, e mandá-lo vazio gravaria 1 m.
                 mapa_rotulo_zoom: $('#aj-zoom').val()
             },
             onOk: function (d) {
+                if (d.mapa_provedor !== cfg.provedor || (d.mapa_provedor === 'google' && d.google_maps_key !== chaveAntes)) { window.location.reload(); return; }
                 $('#aj-chave').data('salva', d.google_maps_key);
                 $('#aj-zoom').val(d.mapa_rotulo_zoom);
 
@@ -3580,7 +3584,29 @@
         atualizarContaCamadas();
 
         var timerBusca = null;
+        var enderecoSeq = 0;
+        $('#busca-endereco').on('click', function () {
+            var termo = $.trim($('#busca').val());
+            if (termo.length < 3) { FTTH.toast('info', 'Digite um endereço com cidade ou um CEP.'); return; }
+            clearTimeout(timerBusca);
+            buscaExterna = true;
+            var seq = ++enderecoSeq;
+            var $b = $(this).prop('disabled', true);
+            FTTH.chamar({ url: 'mapa.php?ajax=buscar_endereco&q=' + encodeURIComponent(termo),
+                onOk: function (d) {
+                    if (seq !== enderecoSeq) return;
+                    var html = '<div class="ftth-busca-grupo">Endereços · OpenStreetMap / ViaCEP</div>';
+                    d.resultados.forEach(function (r) {
+                        html += '<div class="ftth-busca-item" data-lat="' + r.lat + '" data-lng="' + r.lng + '">' + esc(r.rotulo) + '</div>';
+                    });
+                    if (!d.resultados.length) html += '<div class="ftth-busca-item">' + (d.endereco ? esc([d.endereco.logradouro, d.endereco.bairro, d.endereco.localidade, d.endereco.uf].filter(Boolean).join(', ')) + ' — CEP encontrado, mas sem coordenadas. Busque pela cidade ou bairro.' : 'Endereço não encontrado. Informe também a cidade.') + '</div>';
+                    $('#busca-lista').html(html).show();
+                }, onErro: function (m) { FTTH.toast('erro', m); }
+            }).always(function () { $b.prop('disabled', false); });
+        });
         $('#busca').on('input', function () {
+            buscaExterna = false;
+            enderecoSeq++;
             var t = this.value;
             clearTimeout(timerBusca);
             timerBusca = setTimeout(function () { buscar(t); }, 250);

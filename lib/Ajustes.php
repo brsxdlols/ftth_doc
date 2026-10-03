@@ -22,6 +22,14 @@ final class Ajustes
     public const CAMADAS = ['CTO', 'CEO', 'DC', 'PREDIO', 'PROBLEMA', 'RESERVA', 'POSTES',
                             'CABOS', 'QUARENTENA'];
 
+    /** Instalações com chave conservam o Google; novas instalações usam OSM. */
+    public static function provedor(): string
+    {
+        $padrao = trim((string) Config::get('google_maps_key', '')) !== '' ? 'google' : 'osm';
+        $valor = (string) Config::get('mapa_provedor', $padrao);
+        return in_array($valor, ['osm', 'google'], true) ? $valor : $padrao;
+    }
+
     /** @return array<string,bool> todas ligadas, menos as que o usuário desligou */
     public static function camadas(string $usuario): array
     {
@@ -54,6 +62,7 @@ final class Ajustes
     public static function valores(): array
     {
         return [
+            'mapa_provedor'      => self::provedor(),
             'google_maps_key'    => (string) Config::get('google_maps_key', ''),
             'mapa_tipo'          => (string) Config::get('mapa_tipo', 'hybrid'),
             'mapa_rotulo_zoom'   => (int) Config::num('mapa_rotulo_zoom', 17),
@@ -69,6 +78,14 @@ final class Ajustes
     public static function salvar(array $post, string $usuario): array
     {
         $salvas = [];
+
+        if (isset($post['mapa_provedor'])) {
+            if (!in_array($post['mapa_provedor'], ['osm', 'google'], true)) {
+                throw new InvalidArgumentException('Provedor de mapa inválido.');
+            }
+            Config::set('mapa_provedor', (string) $post['mapa_provedor'], $usuario);
+            $salvas[] = 'mapa_provedor';
+        }
 
         if (isset($post['google_maps_key'])) {
             Config::set('google_maps_key', trim((string) $post['google_maps_key']), $usuario);

@@ -12,6 +12,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/../lib/Ajustes.php';
 
 $args = ftth_cli_args($argv);
 $json = !empty($args['json']);
@@ -111,10 +112,10 @@ if ($cfg === null) {
                 "{$c['regioes']} regioes, {$c['caixas']} caixas, {$c['vaos']} vaos, {$c['clientes']} clientes em porta");
 
             $chave = (string) Config::get('google_maps_key', '');
-            verificar($itens, $chave !== '' ? 'ok' : 'aviso', 'chave do Google Maps',
-                $chave !== ''
+            verificar($itens, Ajustes::provedor() === 'osm' || $chave !== '' ? 'ok' : 'aviso', 'provedor do mapa',
+                Ajustes::provedor() === 'osm' ? 'OpenStreetMap gratuito, sem chave' : ($chave !== ''
                     ? 'cadastrada (' . substr($chave, 0, 6) . '...)'
-                    : 'vazia — o mapa pede a chave no primeiro acesso');
+                    : 'vazia — selecione OpenStreetMap ou cadastre a chave'));
 
             foreach (['sync_sis_cliente', 'sync_cto_nativa'] as $flag) {
                 if (Config::ligado($flag)) {

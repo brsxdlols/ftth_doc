@@ -2,7 +2,7 @@
 #
 # ftth_doc :: instalador do addon de documentacao de rede optica para o MK-AUTH.
 #
-#   wget -O - https://raw.githubusercontent.com/marcelosilvestro/ftth_doc/main/instalar.sh | bash
+#   wget -O - https://raw.githubusercontent.com/brsxdlols/ftth_doc/main/instalar.sh | bash
 #
 # O mesmo comando instala, atualiza e repara. Rode quantas vezes quiser: quando ja esta na
 # ultima versao, ele so confere permissoes, menu e diagnostico.
@@ -19,7 +19,7 @@
 #
 # Variaveis de ambiente uteis:
 #   FTTH_DB_USER / FTTH_DB_PASS   credenciais do MySQL, para instalacao desassistida
-#   FTTH_REPO                     outro repositorio (padrao: marcelosilvestro/ftth_doc)
+#   FTTH_REPO                     outro repositorio (padrao: brsxdlols/ftth_doc)
 #   GITHUB_TOKEN                  evita o limite de requisicoes da API do GitHub
 #
 # Este arquivo so age na ultima linha (main "$@"): se o download for cortado no meio, o
@@ -31,7 +31,7 @@ export LC_ALL=C.UTF-8 2>/dev/null || true
 
 # ------------------------------------------------------------------ constantes
 ADDON=ftth_doc
-REPO="${FTTH_REPO:-marcelosilvestro/ftth_doc}"
+REPO="${FTTH_REPO:-brsxdlols/ftth_doc}"
 MKAUTH=/opt/mk-auth
 DEST="$MKAUTH/admin/addons/$ADDON"
 CONF="$MKAUTH/conf/$ADDON.php"
@@ -639,7 +639,7 @@ resumo() {
     echo " Direto:     $url_painel"
     echo
     echo " O que falta voce fazer:"
-    echo "   1. abrir o mapa: os primeiros passos guiam a chave do Google Maps, a regiao,"
+    echo "   1. abrir o mapa: os primeiros passos guiam o mapa gratuito ou Google Maps, a regiao,"
     echo "      o POP, a primeira caixa e o primeiro cabo"
     echo "   2. se voce ja tem a rede em KMZ, importe pelo painel do mapa (aba Ajustes)"
     [ -n "$DUMP" ] && echo "   3. guardar o backup do banco: $DUMP"

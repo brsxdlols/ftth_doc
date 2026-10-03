@@ -41,7 +41,6 @@ tar cf - \
     --exclude='./empacotar.sh' \
     --exclude='./instalar.sh' \
     --exclude='./README.md' \
-    --exclude='./LICENSE' \
     --exclude='*.bak' \
     . | (cd "$DESTINO/staging" && tar xf -)
 
