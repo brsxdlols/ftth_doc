@@ -25,6 +25,47 @@
         (this.listeners[name] || []).slice().forEach(function (fn) { fn(arg); });
     };
     function inherit(Type) { Type.prototype = Object.create(Events.prototype); Type.prototype.constructor = Type; }
+    /** Tiles inexistentes da Esri retornam uma imagem cinza com HTTP 200 por padrão.
+     * blankTile=false permite detectar a falta e recortar o tile pai disponível. */
+    var Satelite = L.GridLayer.extend({
+        createTile: function (coords, done) {
+            var tile = L.DomUtil.create('div');
+            var tamanho = this.getTileSize();
+            tile.style.overflow = 'hidden';
+            tile.style.position = 'absolute';
+            var terminou = false;
+            function carregar(z) {
+                var fator = Math.pow(2, coords.z - z);
+                var x = Math.floor(coords.x / fator), y = Math.floor(coords.y / fator);
+                var imagem = document.createElement('img');
+                imagem.alt = ''; imagem.setAttribute('role', 'presentation');
+                imagem.style.position = 'absolute';
+                imagem.style.width = tamanho.x * fator + 'px';
+                imagem.style.height = tamanho.y * fator + 'px';
+                imagem.style.maxWidth = 'none'; imagem.style.maxHeight = 'none';
+                imagem.style.left = -(coords.x - x * fator) * tamanho.x + 'px';
+                imagem.style.top = -(coords.y - y * fator) * tamanho.y + 'px';
+                imagem.onload = function () {
+                    if (terminou) return;
+                    terminou = true; tile.appendChild(imagem); tile.dataset.zoomFonte = String(z);
+                    done(null, tile);
+                };
+                imagem.onerror = function () {
+                    if (terminou) return;
+                    if (z > 0) carregar(z - 1);
+                    else {
+                        terminou = true;
+                        tile.textContent = 'Imagem indisponível';
+                        done(new Error('Não foi possível carregar a imagem de satélite.'), tile);
+                    }
+                };
+                imagem.src = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'
+                    + z + '/' + y + '/' + x + '?blankTile=false';
+            }
+            carregar(Math.min(coords.z, 19));
+            return tile;
+        }
+    });
     function Map(el, opts) {
         Events.call(this);
         var self = this;
@@ -34,9 +75,9 @@
             maxNativeZoom: 19, maxZoom: 21,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         });
-        this.bases.satellite = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        this.bases.satellite = new Satelite({
             maxNativeZoom: 19, maxZoom: 21,
-            attribution: 'Imagens &copy; <a href="https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9">Esri</a>, Maxar, Earthstar Geographics e GIS User Community'
+            attribution: 'Imagens &copy; <a href="https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9">Esri</a>, Vantor, Earthstar Geographics e GIS User Community'
         });
         this.tipo = 'roadmap';
         try { this.tipo = localStorage.getItem('ftth_mapa_base') === 'satellite' ? 'satellite' : 'roadmap'; } catch (e) {}

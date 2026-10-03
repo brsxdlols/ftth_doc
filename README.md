@@ -1,5 +1,9 @@
 # FTTH Doc Visual Net — documentação da rede óptica dentro do MK-AUTH
 
+Correção 0.9.12: satélite usa a imagem do nível anterior quando falta cobertura no zoom
+solicitado, em vez de exibir a tela cinza da Esri. A aproximação e as coordenadas dos
+pontos são mantidas; o detalhamento da imagem depende da cobertura disponível.
+
 ## Novidades da 0.9.11
 
 Digite para receber sugestões de endereços via Photon após uma pausa curta (800 ms).
