@@ -1,5 +1,9 @@
 # FTTH Doc Visual Net — documentação da rede óptica dentro do MK-AUTH
 
+Correção 0.9.13: imagens do mapa ficam contidas na área do mapa, abaixo da ficha
+do ponto. O satélite consulta a cobertura antes de carregar tiles e usa a imagem
+disponível do nível anterior. A transição translúcida dos tiles foi removida.
+
 Correção 0.9.12: satélite usa a imagem do nível anterior quando falta cobertura no zoom
 solicitado, em vez de exibir a tela cinza da Esri. A aproximação e as coordenadas dos
 pontos são mantidas; o detalhamento da imagem depende da cobertura disponível.

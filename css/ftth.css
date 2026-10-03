@@ -470,13 +470,14 @@ html.ftth-sem-scroll body { overflow: hidden; height: 100%; }
 /* A altura final é calculada em js/mapa.js pelo espaço que sobra na janela;
    este valor é só o ponto de partida antes do script rodar. */
 #mapa             { width: 100%; height: calc(100vh - 240px); min-height: 420px;
-                    border: 1px solid var(--ftth-borda); border-radius: 6px; }
+                    border: 1px solid var(--ftth-borda); border-radius: 6px;
+                    position: relative; z-index: 0; isolation: isolate; overflow: hidden; }
 .ftth-rotulo      { text-shadow: 0 0 3px #fff, 0 0 3px #fff; font-weight: 600; }
 
 /* U1: a ficha abre sobre o mapa, sem trocar de página — o mapa continua no mesmo lugar. */
 .ftth-painel      { position: absolute; top: 12px; left: 12px; width: 320px; max-height: calc(100% - 24px);
                     overflow: auto; background: #fff; border: 1px solid var(--ftth-borda);
-                    border-radius: 6px; box-shadow: 0 8px 24px rgba(20,35,60,.18); padding: 14px 16px; }
+                    border-radius: 6px; box-shadow: 0 8px 24px rgba(20,35,60,.18); padding: 14px 16px; z-index: 6; }
 .ftth-painel-titulo { margin: 0 0 2px; font-size: 15px; color: var(--ftth-azul); }
 .ftth-painel-fechar { position: absolute; top: 6px; right: 8px; border: 0; background: none;
                       font-size: 20px; line-height: 1; color: var(--ftth-cinza); cursor: pointer; }

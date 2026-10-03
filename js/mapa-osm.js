@@ -28,7 +28,25 @@
     /** Tiles inexistentes da Esri retornam uma imagem cinza com HTTP 200 por padrão.
      * blankTile=false permite detectar a falta e recortar o tile pai disponível. */
     var Satelite = L.GridLayer.extend({
+        disponivel: function (z, x, y) {
+            var esquerda = Math.floor(x / 8) * 8, topo = Math.floor(y / 8) * 8;
+            var chave = z + '/' + topo + '/' + esquerda;
+            this.cobertura = this.cobertura || Object.create(null);
+            if (!this.cobertura[chave]) {
+                if (Object.keys(this.cobertura).length >= 128) this.cobertura = Object.create(null);
+                // Uma consulta informa a cobertura de 64 tiles e evita downloads que falhariam.
+                this.cobertura[chave] = fetch('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tilemap/'
+                    + chave + '/8/8?f=json').then(function (r) { return r.json(); }).catch(function () { return null; });
+            }
+            return this.cobertura[chave].then(function (r) {
+                if (r && r.error && r.error.code === 422) return false;
+                if (!r || !r.location || !r.data) return null;
+                var l = r.location, i = (y - l.top) * l.width + x - l.left;
+                return i >= 0 && i < r.data.length ? r.data[i] === 1 : null;
+            });
+        },
         createTile: function (coords, done) {
+            var camada = this;
             var tile = L.DomUtil.create('div');
             var tamanho = this.getTileSize();
             tile.style.overflow = 'hidden';
@@ -59,8 +77,11 @@
                         done(new Error('Não foi possível carregar a imagem de satélite.'), tile);
                     }
                 };
-                imagem.src = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'
-                    + z + '/' + y + '/' + x + '?blankTile=false';
+                camada.disponivel(z, x, y).then(function (disponivel) {
+                    if (disponivel === false && z > 0) { carregar(z - 1); return; }
+                    imagem.src = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'
+                        + z + '/' + y + '/' + x + '?blankTile=false';
+                });
             }
             carregar(Math.min(coords.z, 19));
             return tile;
@@ -69,7 +90,7 @@
     function Map(el, opts) {
         Events.call(this);
         var self = this;
-        this.l = L.map(el, { maxZoom: 21, doubleClickZoom: false }).setView(coord(opts.center), opts.zoom);
+        this.l = L.map(el, { maxZoom: 21, doubleClickZoom: false, fadeAnimation: false }).setView(coord(opts.center), opts.zoom);
         this.bases = {};
         this.bases.roadmap = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxNativeZoom: 19, maxZoom: 21,
